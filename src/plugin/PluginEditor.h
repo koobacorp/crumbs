@@ -30,7 +30,7 @@ private:
     };
     Hit hitTest(juce::Point<float>) const;
     void layout();
-    juce::Rectangle<float> timeline, laneBar, orbArea, knobRow, fineRow, busRow, topBar;
+    juce::Rectangle<float> timeline, hintRow, laneBar, orbArea, knobRow, fineRow, busRow, busLabel, topBar;
     juce::Rectangle<float> btnAB, btnUndo, btnRedo, btnPlay, btnRebuild, btnAdd, btnSplit, btnMerge;
     juce::Rectangle<float> btnSaveA, btnSaveM, btnDragA, btnDragM, btnKeep, btnRename;
     juce::Rectangle<float> keyBox, scaleBox, snapBox, modeLoop, modeSamp;

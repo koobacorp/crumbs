@@ -44,17 +44,19 @@ CrumbsEditor::CrumbsEditor(CrumbsProcessor& p)
 CrumbsEditor::~CrumbsEditor() { stopTimer(); }
 
 void CrumbsEditor::layout() {
-    auto b = getLocalBounds().toFloat().reduced(18, 16);
-    topBar = b.removeFromTop(28);
-    b.removeFromTop(8);
-    timeline = b.removeFromTop(100);
+    auto b = getLocalBounds().toFloat().reduced(18, 18);
+    topBar = b.removeFromTop(30);
     b.removeFromTop(10);
-    laneBar = b.removeFromTop(36);
-    b.removeFromTop(8);
-    busRow = b.removeFromBottom(86);
+    hintRow = b.removeFromTop(14);
+    b.removeFromTop(4);
+    timeline = b.removeFromTop(88); // slice strip only; hint sits above it
+    b.removeFromTop(12);
+    laneBar = b.removeFromTop(38);
+    b.removeFromTop(10);
+    busRow = b.removeFromBottom(150);
+    b.removeFromBottom(10);
+    fineRow = b.removeFromBottom(112);
     b.removeFromBottom(8);
-    fineRow = b.removeFromBottom(96);
-    b.removeFromBottom(6);
     orbArea = b;
 
     auto t = topBar;
@@ -74,23 +76,29 @@ void CrumbsEditor::layout() {
 
     auto lb = laneBar;
     modeSamp = lb.removeFromRight(78);
+    lb.removeFromRight(6);
     modeLoop = lb.removeFromRight(70);
-    lb.removeFromRight(10);
+    lb.removeFromRight(8);
     btnPlay = lb.removeFromRight(64);
-    lb.removeFromRight(8);
-    btnDragM = lb.removeFromRight(78);
-    btnDragA = lb.removeFromRight(78);
-    btnSaveM = lb.removeFromRight(70);
-    btnSaveA = lb.removeFromRight(78);
-    lb.removeFromRight(8);
-    btnAdd = lb.removeFromRight(36);
+    lb.removeFromRight(14);
+    btnDragM = lb.removeFromRight(76);
+    lb.removeFromRight(4);
+    btnDragA = lb.removeFromRight(76);
+    lb.removeFromRight(4);
+    btnSaveM = lb.removeFromRight(72);
+    lb.removeFromRight(4);
+    btnSaveA = lb.removeFromRight(76);
+    lb.removeFromRight(16); // keep the + clear of the Save Audio cluster
+    btnAdd = lb.removeFromRight(44);
+    lb.removeFromRight(12);
     // remaining width: lane chips
     laneChips.clear();
     int nL = (int)proc.machine().lanes.size();
-    float cw = nL > 0 ? (lb.getWidth() - 6 * (nL - 1)) / juce::jmax(1, nL) : 80;
+    float gap = 6.f;
+    float cw = nL > 0 ? (lb.getWidth() - gap * (nL - 1)) / juce::jmax(1, nL) : 80;
     for (int i = 0; i < nL; ++i) {
         laneChips.push_back(lb.removeFromLeft(cw));
-        lb.removeFromLeft(6);
+        if (i + 1 < nL) lb.removeFromLeft(gap);
     }
 
     // rebuild + fine knobs depend on selected lane / rebuilt
@@ -142,23 +150,26 @@ void CrumbsEditor::layout() {
     place(fine, fineRow, false);
 
     auto br = busRow;
-    auto labs = br.removeFromTop(20);
-    (void)labs;
-    auto presets = br.removeFromTop(28);
+    busLabel = br.removeFromTop(16);
+    br.removeFromTop(4);
+    auto presets = br.removeFromTop(26);
     busBtns.clear();
     float bw = presets.getWidth() / 5.f;
     for (int i = 0; i < 5; ++i) busBtns.push_back(presets.removeFromLeft(bw).reduced(3, 2));
-    auto ctrls = br;
+    br.removeFromTop(6);
+    auto ctrls = br; // room for caption + dial + value
     std::vector<std::pair<juce::String,int>> busK = {{"Punch", G_PUNCH},{"Crunch", G_CRUNCH},{"Squash", G_SQUASH},{"Pump", G_PUMP},{"Room", G_BROOM}};
     float cw2 = ctrls.getWidth() / 6.f;
     for (int i = 0; i < 5; ++i) {
-        auto r = ctrls.removeFromLeft(cw2).reduced(6, 0);
+        auto r = ctrls.removeFromLeft(cw2).reduced(8, 2);
         knobs.push_back({busK[(size_t)i].first, busK[(size_t)i].second, r, false});
     }
     auto typ = ctrls;
     crunchTypes.clear();
-    float tw = typ.getWidth() / 4.f;
-    for (int i = 0; i < 4; ++i) crunchTypes.push_back(typ.removeFromLeft(tw).reduced(2, 8));
+    // stack the four crunch types in a 2x2 so they stay readable beside the knobs
+    auto typTop = typ.removeFromTop(typ.getHeight() * 0.5f);
+    for (int i = 0; i < 2; ++i) crunchTypes.push_back(typTop.removeFromLeft(typTop.getWidth() / (2 - i)).reduced(3, 4));
+    for (int i = 0; i < 2; ++i) crunchTypes.push_back(typ.removeFromLeft(typ.getWidth() / (2 - i)).reduced(3, 4));
 }
 
 void CrumbsEditor::resized() { layout(); }
@@ -172,9 +183,10 @@ void CrumbsEditor::paint(juce::Graphics& g) {
     int sel = juce::jlimit(0, juce::jmax(0, (int)m.lanes.size() - 1), m.selectedLane);
     juce::Colour laneC = m.lanes.empty() ? muted() : palCol(m.lanes[(size_t)sel].colour);
 
-    // corner catalogue type
-    tiny(g, juce::Rectangle<float>(18, 8, 140, 14), "CRUMBS", muted(), juce::Justification::centredLeft);
-    tiny(g, juce::Rectangle<float>((float)getWidth() - 160, 8, 142, 14), "V1.0  KOOBACORP", muted(), juce::Justification::centredRight);
+    // corner catalogue type — top-left and bottom-right, clear of the top controls
+    tiny(g, juce::Rectangle<float>(18, 4, 140, 12), "CRUMBS", muted(), juce::Justification::centredLeft);
+    tiny(g, juce::Rectangle<float>((float)getWidth() - 168, (float)getHeight() - 16, 150, 12),
+         "V1.0  KOOBACORP", muted(), juce::Justification::centredRight);
 
     // top controls
     auto drawBtn = [&](juce::Rectangle<float> r, const juce::String& t, bool on, bool hi = false) {
@@ -233,7 +245,7 @@ void CrumbsEditor::paint(juce::Graphics& g) {
         float x0 = timeline.getX() + timeline.getWidth() * e.destStart / (float)N;
         int len = juce::jmax(e.srcEnd - e.srcStart, (int)(0.03 * (m.original.sr > 0 ? m.original.sr : 44100)));
         float x1 = timeline.getX() + timeline.getWidth() * (e.destStart + len) / (float)N;
-        auto r = juce::Rectangle<float>(x0, timeline.getY() + 10, juce::jmax(4.f, x1 - x0), timeline.getHeight() - 20);
+        auto r = juce::Rectangle<float>(x0, timeline.getY() + 8, juce::jmax(4.f, x1 - x0), timeline.getHeight() - 16);
         auto c = palCol(m.lanes[(size_t)e.lane].colour);
         if (i == m.selectedEvent) {
             g.setColour(c.withAlpha(0.28f));
@@ -246,7 +258,12 @@ void CrumbsEditor::paint(juce::Graphics& g) {
             g.drawRoundedRectangle(r, 3.f, 1.4f);
         }
     }
-    tiny(g, timeline.withHeight(12).translated(6, 2), "Arrange  ·  drag to move  ·  double-click to delete", muted(), juce::Justification::centredLeft);
+    {
+        // Middle dot via UTF-8 so it cannot be read as Latin-1 ("Â·").
+        const juce::String hint (juce::CharPointer_UTF8 (
+            "Arrange  \xc2\xb7  drag to move  \xc2\xb7  double-click to delete"));
+        tiny(g, hintRow, hint, muted(), juce::Justification::centredLeft);
+    }
 
     // lane chips
     for (int i = 0; i < (int)laneChips.size(); ++i) {
@@ -296,24 +313,27 @@ void CrumbsEditor::paint(juce::Graphics& g) {
         if (k.param == lp(sel, LP_PITCH) || k.param == lp(sel, LP_KTUNE) || k.param == G_CRTYPE) {}
         valueFont(g, valR, vs, ink());
         float rad = juce::jmin(r.getWidth(), r.getHeight()) * 0.42f;
+        rad = juce::jmin(rad, juce::jmin(r.getWidth(), r.getHeight()) * 0.5f - 2.f);
+        rad = juce::jmax(rad, 14.f);
         auto cx = r.getCentre();
+        float sw = juce::jlimit(1.6f, 2.6f, rad * 0.09f);
         g.setColour(line());
-        g.drawEllipse(cx.x - rad, cx.y - rad, rad * 2, rad * 2, 1.4f);
+        g.drawEllipse(cx.x - rad, cx.y - rad, rad * 2, rad * 2, sw);
         float a0 = juce::MathConstants<float>::pi * 0.75f;
         float a1 = juce::MathConstants<float>::pi * 2.25f;
         float a = a0 + nrm * (a1 - a0);
         juce::Path arc;
         arc.addCentredArc(cx.x, cx.y, rad, rad, 0, a0, a, true);
         g.setColour(k.rebuild ? laneC : ink());
-        g.strokePath(arc, juce::PathStrokeType(2.4f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        g.strokePath(arc, juce::PathStrokeType(sw + 0.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
         g.setColour(ink());
-        g.drawLine(cx.x, cx.y, cx.x + rad * 0.78f * std::cos(a), cx.y + rad * 0.78f * std::sin(a), 2.f);
+        g.drawLine(cx.x, cx.y, cx.x + rad * 0.78f * std::cos(a), cx.y + rad * 0.78f * std::sin(a), sw);
     };
     // only fine + big + bus knobs already in knobs[]
     for (auto& k : knobs) drawKnob(k);
 
     // bus
-    tiny(g, busRow.withHeight(14).translated(0, -16), "Drum bus", muted(), juce::Justification::centredLeft);
+    tiny(g, busLabel, "Drum bus", muted(), juce::Justification::centredLeft);
     for (int i = 0; i < (int)busBtns.size(); ++i) {
         bool on = (m.bus.preset == i);
         g.setColour(on ? ink() : wash());
