@@ -2,7 +2,7 @@
 
 ## On a Mac (the release build)
 
-The GitHub Actions workflow in `.github/workflows/macos.yml` makes a universal (arm64 + x86_64) VST3, runs engine and plugin tests, and runs pluginval at strictness 10. Private-repo Actions have been blocked by billing before; if that is still the case the Mac zip will not appear until it is resolved. The repo stays private.
+The GitHub Actions workflow in `.github/workflows/macos.yml` makes a universal (arm64 + x86_64) VST3 and AU, runs engine and plugin tests, and runs pluginval at strictness 10 on both formats (plus auval on the AU).
 
 Locally, with CMake, Xcode and JUCE 8.0.4 in a `JUCE/` folder next to this file:
 
@@ -12,6 +12,7 @@ cmake --build build --config Release --parallel
 ```
 
 The VST3 lands in `build/Crumbs_artefacts/Release/VST3/CRUMBS.vst3`.
+The AU lands in `build/Crumbs_artefacts/Release/AU/CRUMBS.component`.
 
 ## Engine-only (no JUCE)
 
@@ -23,4 +24,4 @@ cmake --build build-engine
 
 ## Linux box notes
 
-This project can be configured with Ninja and a C++20 compiler. Point `CMAKE_C_COMPILER` / `CMAKE_CXX_COMPILER` at your compiler, keep a `JUCE/` checkout (8.0.4) next to the project, and build the plugin plus `crumbs_plugin_tests`.
+This project can be configured with Ninja and a C++20 compiler. Point `CMAKE_C_COMPILER` / `CMAKE_CXX_COMPILER` at your compiler, keep a `JUCE/` checkout (8.0.4) next to the project, and build the plugin plus `crumbs_plugin_tests`. AU is not built on Linux.

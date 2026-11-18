@@ -30,13 +30,14 @@ jobs:
         shell: bash
         run: |
           set -e
-          b="build/Crumbs_artefacts/Release/VST3/CRUMBS.vst3"
-          strip -x "$b/Contents/MacOS/CRUMBS"
-          codesign --force --deep --sign - --timestamp=none "$b"
-          codesign --verify --deep --strict "$b"
-          lipo -info "$b/Contents/MacOS/CRUMBS" | tee -a lipo.txt
-          lipo "$b/Contents/MacOS/CRUMBS" -verify_arch arm64 x86_64
-          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$b/Contents/Info.plist" | tee -a version.txt
+          for b in "build/Crumbs_artefacts/Release/VST3/CRUMBS.vst3" "build/Crumbs_artefacts/Release/AU/CRUMBS.component"; do
+            strip -x "$b/Contents/MacOS/CRUMBS"
+            codesign --force --deep --sign - --timestamp=none "$b"
+            codesign --verify --deep --strict "$b"
+            lipo -info "$b/Contents/MacOS/CRUMBS" | tee -a lipo.txt
+            lipo "$b/Contents/MacOS/CRUMBS" -verify_arch arm64 x86_64
+            /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$b/Contents/Info.plist" | tee -a version.txt
+          done
       - name: pluginval VST3 strictness 10 (required)
         shell: bash
         run: |
@@ -44,25 +45,40 @@ jobs:
           curl -fLsS -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
           unzip -q pluginval.zip
           ./pluginval.app/Contents/MacOS/pluginval --strictness-level 10 --validate-in-process --timeout-ms 600000 "build/Crumbs_artefacts/Release/VST3/CRUMBS.vst3" 2>&1 | tee pluginval-vst3-log.txt
+      - name: auval + pluginval AU (required)
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R build/Crumbs_artefacts/Release/AU/CRUMBS.component ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 5
+          auval -a 2>&1 | grep -i -E "Crmb|CRUMBS" | tee auval-list.txt
+          auval -strict -v aufx Crmb Koob 2>&1 | tee auval-log.txt
+          grep -q "AU VALIDATION SUCCEEDED" auval-log.txt
+          ./pluginval.app/Contents/MacOS/pluginval --strictness-level 10 --validate-in-process --timeout-ms 600000 ~/Library/Audio/Plug-Ins/Components/CRUMBS.component 2>&1 | tee pluginval-au-log.txt
       - name: Package
         if: success()
         run: |
           mkdir -p pkg/CRUMBS
-          cp -R build/Crumbs_artefacts/Release/VST3/CRUMBS.vst3 pkg/CRUMBS/
+          cp -R build/Crumbs_artefacts/Release/VST3/CRUMBS.vst3 build/Crumbs_artefacts/Release/AU/CRUMBS.component pkg/CRUMBS/
           cp scripts/install_mac.sh scripts/INSTALL.txt README.md TESTING.md pkg/CRUMBS/
           chmod +x pkg/CRUMBS/install_mac.sh
-          cd pkg && zip -9 -r -y -q "$GITHUB_WORKSPACE/CRUMBS-macOS-universal-v1.0.zip" CRUMBS
-          shasum -a 256 "$GITHUB_WORKSPACE/CRUMBS-macOS-universal-v1.0.zip" | tee "$GITHUB_WORKSPACE/sha256.txt"
+          cd pkg && zip -9 -r -y -q "$GITHUB_WORKSPACE/CRUMBS-macOS-universal-v2.0.zip" CRUMBS
+          shasum -a 256 "$GITHUB_WORKSPACE/CRUMBS-macOS-universal-v2.0.zip" | tee "$GITHUB_WORKSPACE/sha256.txt"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: CRUMBS-macOS-universal-v1.0
+          name: CRUMBS-macOS-universal-v2.0
           path: |
-            CRUMBS-macOS-universal-v1.0.zip
+            CRUMBS-macOS-universal-v2.0.zip
             shots/*.png
             engine-test-log.txt
             plugin-test-log.txt
             pluginval-vst3-log.txt
+            pluginval-au-log.txt
+            auval-log.txt
+            auval-list.txt
             lipo.txt
             version.txt
             sha256.txt

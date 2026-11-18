@@ -1,13 +1,32 @@
 #!/bin/bash
-set -e
-HERE="$(cd "$(dirname "$0")" && pwd)"
-SRC="$HERE/CRUMBS.vst3"
-if [ ! -d "$SRC" ]; then
-  echo "CRUMBS.vst3 not found next to this script."
-  exit 1
+# CRUMBS installer: copies CRUMBS.vst3 and CRUMBS.component into the system plug-in folders.
+# Asks before replacing an existing copy and keeps a dated backup. Needs your Mac password (sudo).
+set -euo pipefail
+cd "$(dirname "$0")"
+stamp="$(date +%Y%m%d-%H%M%S)"
+install_one() {
+  local src="$1" dest_dir="$2" name; name="$(basename "$src")"
+  [[ -d "$src" ]] || { echo "Keep this script next to $name."; exit 1; }
+  local dest="$dest_dir/$name"
+  sudo mkdir -p "$dest_dir"
+  if [[ -e "$dest" ]]; then
+    echo "$name is already installed in $dest_dir."
+    read -r -p "Replace it (a backup is kept)? Type yes: " answer
+    if [[ "$answer" != yes ]]; then echo "Skipped $name."; return; fi
+    sudo mv "$dest" "$HOME/Desktop/$name.backup-$stamp"
+    echo "Old copy moved to ~/Desktop/$name.backup-$stamp"
+  fi
+  sudo cp -R "$src" "$dest"
+  sudo xattr -dr com.apple.quarantine "$dest" 2>/dev/null || true
+  codesign --verify --deep --strict "$dest"
+  echo "Installed $dest"
+}
+echo "Close FL Studio before installing."
+install_one "$PWD/CRUMBS.vst3" "/Library/Audio/Plug-Ins/VST3"
+if [[ -d "$PWD/CRUMBS.component" ]]; then
+  install_one "$PWD/CRUMBS.component" "/Library/Audio/Plug-Ins/Components"
+  killall -9 AudioComponentRegistrar 2>/dev/null || true
 fi
-DEST="$HOME/Library/Audio/Plug-Ins/VST3"
-echo "This will copy CRUMBS.vst3 to $DEST"
-mkdir -p "$DEST"
-cp -R "$SRC" "$DEST/"
-echo "Done. Rescan plugins in FL Studio, or restart it."
+echo
+echo "Done. In FL Studio: Options > Manage plugins > Find plugins,"
+echo "then add CRUMBS on a mixer track (it is an effect, not a generator)."

@@ -1,48 +1,24 @@
 # CRUMBS
 
-A drum-loop plugin for FL Studio. You drop a loop in; it cuts the loop into colour-coded pieces, sorts each hit into a lane, and lets you tweak, move, copy and extend those pieces. You can optionally rebuild a lane as a synth sound, lock pitched drums to a key, and run the whole thing through punchy indie-drum bus presets.
+A drum mixer insert for FL Studio. Put it on a drum bus or a single drum channel, the same way you would put on a compressor. It shapes the drums already running through that track. You do not drop a loop in.
 
-The drum bus starts on **Clean** (a true bypass). Rearranging and editing stays dry until you pick a coloured preset.
+Two modes, always your choice:
 
-CRUMBS is not a rewrite of BAKERY. BAKERY makes drums from scratch. CRUMBS takes drums you already have and lets you pull them apart.
+- **Whole** (default) — treat the drum sound as one thing. Punch, body, snap, crunch, tone, glue, room, width, mix and output.
+- **Split** — a live frequency split into Kick, Snare, Hats and Perc. Shape each part on its own, or solo it with Listen. This is not a stem separator: parts will bleed. Use Listen to hear what each orb is catching.
 
-v1.0 is a macOS universal VST3. The repo is private. Nothing here is proven on real loops in FL until you try it, and it is not installed on your Mac until you ask.
+The drum bus starts on **Clean**, which is a true bypass. Tape Warm, Blown Speaker, Smashed Room and Bedroom Crunch are punchy, saturated indie-drum colours. A/B compares the processed sound to the dry input.
 
-## What you do with it
+v2.0 is a macOS universal VST3 and AU. Nothing here is proven on real drums in FL until you try it, and it is not installed on your Mac until you ask.
 
-1. Drop a WAV, AIFF or FLAC loop onto the plugin (or a clip dragged from FL).
-2. It finds each hit and paints the loop across the top, cut into coloured sections.
-3. Click a colour (or a single slice) and tweak that part: level, pitch, decay, crunch, room, swing, and so on.
-4. Rearrange: drag slices, copy or duplicate to make a longer loop (2 bars into 4 or 8, or six pieces instead of four), delete or reorder. All of this has undo.
-5. If a hit landed in the wrong lane, right-click it and send it to another lane (Fix-the-sort). You can also split, merge, add, rename and recolour lanes, up to eight.
-6. Optionally press **Rebuild** for a synth version of that lane, with a few big knobs and a Blend slider.
-7. Play it as a tempo-synced loop, or as a sampler (one MIDI note per lane).
-8. Drag a lane, or the whole edited loop, out to FL as audio or MIDI. If FL ignores the drag, use **Save audio** / **Save MIDI**.
+## Latency and loudness
 
-## How it splits the loop
+Default latency is **0 samples**. An optional Lookahead safety (about 1.5 ms) is off by default; when you turn it on, the plugin reports that delay to the host.
 
-Splitting is free and local. There is no paid cloud GPU and no neural un-mixer in v1.0.
-
-It listens for a sudden rise in energy (an onset), cuts there, and labels each slice using simple features: **thump**, **snap**, **sizzle**, brightness and how long the hit rings. A rule-based sort uses those first.
-
-If a kick and a hat land at the same moment, that slice still holds both. Fix-the-sort, split, merge and nudge cover the rest.
-
-Note names are **concert pitch** (A4 = 440 Hz, C4 = MIDI 60). FL Studio’s piano roll often labels that C5. The small “concert pitch” note on the display is there so the two are not confused.
-
-**Keep in key** snaps kicks and other pitched lanes to the settled body pitch after any click or drop, not the start of the sweep. Hats are left alone.
-
-## The drum bus
-
-- **Clean** — default, true bypass
-- **Tape Warm**
-- **Blown Speaker**
-- **Smashed Room**
-- **Bedroom Crunch**
-
-Each preset is punch, crunch (tape / tube / clip / fuzz), parallel squash, pump (kick ducking) and room, in different amounts. You can still move those knobs after picking a preset.
+Processors that add gain use auto gain compensation so a preset is a character, not a jump in level. A clip-safe ceiling (default −0.1 dBFS) sits at the end of the chain. Clean does not run the ceiling: a legal input comes out bit-exact.
 
 ## Building
 
-See [BUILD.md](BUILD.md). Tests are in [TESTING.md](TESTING.md). The full plan is in [PLAN.md](PLAN.md).
+See [BUILD.md](BUILD.md). Tests are in [TESTING.md](TESTING.md). The design is in [PLAN.md](PLAN.md).
 
-Engine tests have no JUCE dependency. The plugin is JUCE 8 / CMake, VST3 only.
+Engine tests have no JUCE dependency. The plugin is JUCE 8 / CMake, VST3 and AU (VST3 only on Linux).

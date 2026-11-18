@@ -1,417 +1,395 @@
 #include "TestUtil.h"
-#include "Machine.h"
+#include "Engine.h"
 #include <chrono>
+#include <cmath>
 using namespace cr;
 
-static Wave makeKitLoop(double sr = 44100, double bpm = 120, int bars = 2, bool hatsOnKick = false) {
+static void addKick(std::vector<float>& L, std::vector<float>& R, int at, double sr, float hz = 50, float amp = 0.9f) {
+    int n = (int)L.size(); float ph = 0;
+    for (int i = 0; i < (int)(0.4 * sr) && at + i < n; ++i) {
+        float t = float(i) / float(sr);
+        float f = hz * std::exp2(18.f * std::exp(-t / 0.008f) / 12.f);
+        float env = std::exp(-t / 0.28f);
+        ph += 2.f * float(M_PI) * f / float(sr);
+        float s = amp * env * std::sin(ph);
+        L[(size_t)(at + i)] += s; R[(size_t)(at + i)] += s;
+    }
+}
+static void addSnare(std::vector<float>& L, std::vector<float>& R, int at, double sr, float amp = 0.7f) {
+    int n = (int)L.size(); uint32_t rng = 0x12345678u + (uint32_t)at;
+    for (int i = 0; i < (int)(0.22 * sr) && at + i < n; ++i) {
+        float t = float(i) / float(sr);
+        rng = rng * 1664525u + 1013904223u;
+        float noise = (float((rng >> 9) & 0xFFFF) / 32768.f - 1.f);
+        float body = 0.45f * std::sin(2 * float(M_PI) * 200.f * t) * std::exp(-t / 0.05f);
+        float s = amp * (body + 0.7f * noise * std::exp(-t / 0.09f) + 0.5f * noise * std::exp(-t / 0.008f));
+        L[(size_t)(at + i)] += s; R[(size_t)(at + i)] += s * 0.95f;
+    }
+}
+static void addHat(std::vector<float>& L, std::vector<float>& R, int at, double sr, float amp = 0.35f, float dec = 0.05f) {
+    int n = (int)L.size(); uint32_t rng = 0xC0FFEEu + (uint32_t)at * 17;
+    float hp = 0, a = 1.f - std::exp(-2.f * float(M_PI) * 7000.f / float(sr));
+    for (int i = 0; i < (int)(0.2 * sr) && at + i < n; ++i) {
+        float t = float(i) / float(sr);
+        rng = rng * 1664525u + 1013904223u;
+        float noise = (float((rng >> 9) & 0xFFFF) / 32768.f - 1.f);
+        hp += a * (noise - hp);
+        float s = amp * (noise - hp) * std::exp(-t / dec);
+        L[(size_t)(at + i)] += s; R[(size_t)(at + i)] += s;
+    }
+}
+static void addPerc(std::vector<float>& L, std::vector<float>& R, int at, double sr, float hz = 220, float amp = 0.5f) {
+    int n = (int)L.size(); float ph = 0;
+    for (int i = 0; i < (int)(0.15 * sr) && at + i < n; ++i) {
+        float t = float(i) / float(sr);
+        ph += 2.f * float(M_PI) * hz / float(sr);
+        float s = amp * std::sin(ph) * std::exp(-t / 0.08f);
+        L[(size_t)(at + i)] += s; R[(size_t)(at + i)] += s;
+    }
+}
+
+struct Buf {
+    std::vector<float> L, R;
+    Buf(int n = 0) { L.assign((size_t)n, 0); R.assign((size_t)n, 0); }
+    int n() const { return (int)L.size(); }
+    void process(Engine& e, int block = 256) {
+        int i = 0;
+        while (i < n()) {
+            int m = std::min(block, n() - i);
+            e.process(L.data() + i, R.data() + i, m);
+            i += m;
+        }
+    }
+};
+
+static Buf makeKit(double sr = 44100, double bpm = 120, int bars = 2, float kickAmp = 0.9f) {
     int beats = bars * 4;
     int n = (int)std::lround(sr * 60.0 * beats / bpm);
-    Wave w; w.resize(n, sr);
-    int step = (int)std::lround(sr * 60.0 / bpm / 4.0); // 16th
-    int eighth = step * 2;
-    for (int b = 0; b < beats; ++b) {
-        int q = b * step * 4; // quarter start
-        if (b % 2 == 0) addKick(w, q);
-        else addSnare(w, q);
-        addHat(w, q, 0.35f, 0.04f);
-        addHat(w, q + eighth, 0.28f, 0.04f);
-        if (hatsOnKick && b % 2 == 0) addHat(w, q, 0.4f, 0.05f); // overlap kick
-        if (b % 4 == 3) addPerc(w, q + step * 3, 330, 0.45f);
+    Buf b(n);
+    int step = (int)std::lround(sr * 60.0 / bpm / 4.0);
+    for (int q = 0; q < beats; ++q) {
+        int at = q * step * 4;
+        if (q % 2 == 0) addKick(b.L, b.R, at, sr, 50, kickAmp);
+        else addSnare(b.L, b.R, at, sr, 0.7f);
+        addHat(b.L, b.R, at, sr, 0.35f, 0.04f);
+        addHat(b.L, b.R, at + step * 2, sr, 0.28f, 0.04f);
+        if (q % 4 == 3) addPerc(b.L, b.R, at + step * 3, sr, 330, 0.45f);
     }
-    return w;
+    return b;
 }
 
-static void testKeyMath() {
-    auto n = noteCentsFromHz(440.f);
-    CHECK(n.valid && n.pc == 9 && n.octave == 4 && std::abs(n.cents) < 0.51f);
-    CHECK(formatNoteCents(n) == "A4");
-    n = noteCentsFromHz(50.f);
-    CHECK(n.pc == 7 && n.octave == 1);
-    CHECK(formatNoteCents(n).find("G1") != std::string::npos);
-    CHECK(formatNoteCents(n).find("+35") != std::string::npos);
-    // E minor: F snaps to E
-    float f = snapHz(hzFromMidi(29.f), 4, SC_MINOR, false);
-    auto s = noteCentsFromHz(f);
-    CHECK(s.pc == 4 && s.octave == 1 && std::abs(s.cents) < 0.51f);
-    // settled pitch ignores a front sweep
-    std::vector<float> x(44100 / 2);
-    for (int i = 0; i < (int)x.size(); ++i) {
-        float t = i / 44100.f;
-        float hz = 50.f * std::exp2(24.f * std::exp(-t / 0.03f) / 12.f);
-        x[(size_t)i] = std::sin(2 * float(M_PI) * 50.f * t); // body at 50, we'll use estimate on a later window of a swept signal
-    }
-    // build a real swept kick
-    for (int i = 0; i < (int)x.size(); ++i) {
-        float t = i / 44100.f;
-        float f0 = 50.f * std::pow(2.f, 2.f * std::exp(-t / 0.03f));
-        // integrate phase properly
-    }
-    // simpler: two-tone, first 20ms 200 Hz, rest 50 Hz
-    double ph = 0;
-    for (int i = 0; i < (int)x.size(); ++i) {
-        float t = i / 44100.f; float f0 = t < 0.02f ? 200.f : 50.f;
-        ph += 2 * M_PI * f0 / 44100.0;
-        x[(size_t)i] = std::sin(ph) * std::exp(-t / 0.3f);
-    }
-    float est = estimateSettledHz(x.data(), (int)x.size(), 44100);
-    CHECKM(std::abs(est - 50.f) / 50.f < 0.12f, "settled %g", est);
-}
-
-static void testOnsetsAndLabels() {
-    auto w = makeKitLoop(44100, 120, 2, false);
-    auto sl = sliceAndClassify(w);
-    // 2 bars at 120: 8 quarters (4 kicks, 4 snares), hats on every 8th = 16, plus 2 perc on the last 16th of bars 1 and 2.
-    // Kicks/snares coincide with hats on the quarter — those are OVERLAPPING and must stay one slice.
-    // Expected onsets: every 8th (hats), plus perc off-beats that don't fall on an 8th? last 16th of a bar is an upbeat 16th, not an 8th.
-    // 8th grid: 16 hats. Perc on beat-bar's 16th 4? b%4==3, q + 3*16th = the 4th 16th of that quarter = an 8th if... 
-    // q is quarter, step is 16th, q+3*step is a 16th off the 8th grid. So +2 extra perc. Total ~18 onsets.
-    CHECKM(sl.size() >= 14 && sl.size() <= 24, "onset count %zu", sl.size());
-    // Timing of known isolated? It's messy because hats sit on kicks.
-    // Build a sparser loop: kick, gap, snare, gap, hat, gap, perc.
-    Wave s; s.resize((int)(44100 * 2), 44100);
-    int kAt = (int)(0.00 * 44100), snAt = (int)(0.50 * 44100), hAt = (int)(1.00 * 44100), pAt = (int)(1.50 * 44100);
-    addKick(s, kAt); addSnare(s, snAt); addHat(s, hAt, 0.5f, 0.04f); addPerc(s, pAt, 250, 0.7f);
-    auto sl2 = sliceAndClassify(s);
-    CHECKM(sl2.size() == 4, "sparse count %zu", sl2.size());
-    int hits[4] = {0, 0, 0, 0};
-    // each slice should fall near the known times and have the right label
-    int okTime = 0, okLab = 0;
-    int expectT[4] = {kAt, snAt, hAt, pAt};
-    int expectL[4] = {LANE_KICK, LANE_SNARE, LANE_HATS, LANE_PERC};
-    for (int i = 0; i < 4 && i < (int)sl2.size(); ++i) {
-        int err = std::abs(sl2[(size_t)i].start - expectT[i]);
-        if (err < (int)(0.040 * 44100)) ++okTime;
-        hits[sl2[(size_t)i].lane]++;
-        if (sl2[(size_t)i].lane == expectL[i]) ++okLab;
-        std::printf("  slice %d t=%.3f lane=%d (thump %.2f snap %.2f sizzle %.2f cent %.0f dur %.3f)\n",
-                    i, sl2[(size_t)i].start / 44100.0, sl2[(size_t)i].lane,
-                    sl2[(size_t)i].f.thump, sl2[(size_t)i].f.snap, sl2[(size_t)i].f.sizzle,
-                    sl2[(size_t)i].f.centroid, sl2[(size_t)i].f.duration);
-    }
-    CHECKM(okTime == 4, "times %d/4", okTime);
-    CHECKM(okLab >= 4, "labels %d/4", okLab); // expect all 4 on this clean loop
-}
-
-static void testOverlapStaysTogether() {
-    Wave s; s.resize((int)(44100 * 1.0), 44100);
-    addKick(s, 0); addHat(s, 0, 0.5f, 0.04f); // same instant
-    auto sl = sliceAndClassify(s);
-    CHECKM(sl.size() == 1, "overlap produced %zu slices (want 1)", sl.size());
-}
-
-static void testAccuracy() {
-    // Many clean isolated hits, measure labelling accuracy
-    int ok = 0, n = 0;
-    int conf[4][4] {}; // true, pred
-    for (int trial = 0; trial < 40; ++trial) {
-        Wave s; s.resize((int)(44100 * 2.2), 44100);
-        int t0 = (int)(0.05 * 44100) + trial; // slight jitter
-        int gap = (int)(0.50 * 44100);
-        addKick(s, t0, 45.f + (trial % 5) * 3, 0.8f + 0.05f * (trial % 3));
-        addSnare(s, t0 + gap, 0.6f + 0.05f * (trial % 3));
-        addHat(s, t0 + 2 * gap, 0.3f + 0.05f * (trial % 3), 0.03f + 0.01f * (trial % 3));
-        addPerc(s, t0 + 3 * gap, 180.f + (trial % 6) * 20, 0.5f);
-        auto sl = sliceAndClassify(s);
-        int expect[4] = {LANE_KICK, LANE_SNARE, LANE_HATS, LANE_PERC};
-        for (int i = 0; i < 4; ++i) {
-            // find slice nearest the expected time
-            int want = t0 + i * gap, best = -1, bestE = 1 << 30;
-            for (int j = 0; j < (int)sl.size(); ++j) {
-                int e = std::abs(sl[(size_t)j].start - want);
-                if (e < bestE) { bestE = e; best = j; }
-            }
-            if (best >= 0 && bestE < (int)(0.05 * 44100)) {
-                int pred = sl[(size_t)best].lane;
-                conf[expect[i]][pred]++;
-                if (pred == expect[i]) ++ok;
-                ++n;
-            }
-        }
-    }
-    double acc = n ? 100.0 * ok / n : 0;
-    std::printf("  clean isolated accuracy: %d/%d = %.1f%%\n", ok, n, acc);
-    const char* nm[] = {"kick", "snare", "hats", "perc"};
-    for (int i = 0; i < 4; ++i) {
-        int row = conf[i][0] + conf[i][1] + conf[i][2] + conf[i][3];
-        std::printf("    true %s: k=%d s=%d h=%d p=%d (n=%d)\n", nm[i], conf[i][0], conf[i][1], conf[i][2], conf[i][3], row);
-    }
-    CHECKM(n >= 140 && acc >= 95.0, "accuracy %.1f%% on %d", acc, n);
-}
-
-static void testLanesArrangeUndo() {
-    Machine m;
-    auto w = makeKitLoop();
-    m.loadWave(w);
-    CHECK(m.lanes.size() == 4);
-    CHECK(m.bus.preset == BUS_CLEAN && m.bus.isClean());
-    int n0 = (int)m.events.size();
-    CHECK(n0 > 0);
-    CHECK(m.addLane("808"));
-    CHECK(m.lanes.size() == 5);
-    CHECK(m.lanes.back().name == "808");
-    m.recolourLane((int)m.lanes.size() - 1, 6);
-    CHECK(m.lanes.back().colour == 6);
-    m.renameLane(4, "Sub");
-    CHECK(m.lanes[4].name == "Sub");
-    // ninth lane rejected
-    m.addLane(); m.addLane(); m.addLane();
-    CHECK(m.lanes.size() == 8);
-    CHECK(!m.addLane("nope"));
-    CHECK(m.lanes.size() == 8);
-    // split hats
-    Machine a; a.loadWave(w);
-    int hats = LANE_HATS;
-    CHECK(a.splitLane(hats, "Closed Hats", "Open Hats", LANE_HATS));
-    CHECK(a.lanes.size() == 5);
-    CHECK(a.mergeLanes(hats, (int)a.lanes.size() - 1));
-    CHECK(a.lanes.size() == 4);
-    // fix-the-sort
-    if (!a.events.empty()) {
-        int old = a.events[0].lane;
-        int dest = (old + 1) % (int)a.lanes.size();
-        a.fixSort(0, dest);
-        CHECK(a.events[0].lane == dest);
-        a.doUndo();
-        CHECK(a.events[0].lane == old);
-    }
-    // duplicate 2 bars -> 4
-    int len0 = a.arrangedSamples;
-    int ev0 = (int)a.events.size();
-    a.duplicateAll();
-    CHECK(a.arrangedSamples == len0 * 2);
-    CHECK((int)a.events.size() == ev0 * 2);
-    a.duplicateAll();
-    CHECK(a.arrangedSamples == len0 * 4);
-    // six pieces from four: duplicate a quarter of the original twice more... use range
-    Machine b; b.loadWave(w);
-    int q = b.arrangedSamples / 4;
-    // start with 4 quarters; duplicate first quarter to the end twice? That's 5 and 6 sections of quarter length.
-    b.duplicateRange(0, q, b.arrangedSamples);
-    b.duplicateRange(0, q, b.arrangedSamples);
-    CHECK(b.arrangedSamples == q * 6);
-    // delete / move / nudge + undo
-    int ev = (int)b.events.size();
-    b.deleteEvent(0);
-    CHECK((int)b.events.size() == ev - 1);
-    b.doUndo();
-    CHECK((int)b.events.size() == ev);
-    if (b.events.size() > 1) {
-        int d0 = b.events[1].destStart;
-        b.moveEvent(1, d0 + 1000);
-        CHECK(b.events[1].destStart == d0 + 1000);
-        b.doUndo();
-        CHECK(b.events[1].destStart == d0);
-        b.nudgeEvent(1, 64);
-        CHECK(b.events[1].destStart == d0 + 64);
-    }
-}
-
-static void testBusCleanAndDSP() {
-    // Clean is a true bypass
-    Wave s; s.resize(4096, 44100);
-    for (int i = 0; i < 4096; ++i) { s.L[(size_t)i] = 0.2f * std::sin(2 * float(M_PI) * 220 * i / 44100.f); s.R[(size_t)i] = s.L[(size_t)i]; }
-    BusSettings b; b.applyPreset(BUS_CLEAN);
-    auto L = s.L, R = s.R;
-    applyBus(L.data(), R.data(), 4096, 44100, b, nullptr);
-    int same = 0; for (int i = 0; i < 4096; ++i) same += (L[(size_t)i] == s.L[(size_t)i] && R[(size_t)i] == s.R[(size_t)i]);
-    CHECKM(same == 4096, "clean changed %d samples", 4096 - same);
-    // tape crunch increases harmonic energy
-    BusSettings t; t.applyPreset(BUS_TAPE);
-    CHECK(t.crunch > 0 && t.crunchType == CR_TAPE);
-    auto Lt = s.L, Rt = s.R;
-    applyBus(Lt.data(), Rt.data(), 4096, 44100, t, nullptr);
-    CHECK(tu::finite(Lt) && tu::peak(Lt) > 0);
-    // squash lowers crest on a transient-y signal
-    Wave k; k.resize(44100, 44100); addKick(k, 0);
-    BusSettings sm; sm.applyPreset(BUS_SMASHED);
-    auto Ls = k.L; auto Rs = k.R;
-    float pk0 = tu::peak(Ls);
-    applyBus(Ls.data(), Rs.data(), k.n(), 44100, sm, nullptr);
-    CHECK(tu::finite(Ls) && tu::peak(Ls) <= 0.98f + 1e-5f);
-    (void)pk0;
-    // textbook: pan laws at 0 are equal power ~0.707
-    CHECK(std::abs(panL(0) - panR(0)) < 1e-5f);
-    CHECK(std::abs(panL(0) * panL(0) + panR(0) * panR(0) - 1.f) < 1e-5f);
-    // pitch shift: +12 st doubles frequency — tested via resampling rate in render
-    Machine m; Wave one; one.resize((int)(44100 * 0.6), 44100); addKick(one, 0, 50, 0.9f);
-    m.loadWave(one);
-    for (auto& e : m.events) e.lane = LANE_KICK;
-    m.lanes[0].pitch = 12; // +1 octave
-    auto r = m.render(false, false);
-    // settled estimate on the rendered kick should be near 100 Hz (may be sloppy)
-    float hz = estimateSettledHz(r.L.data(), std::min(r.n(), (int)(0.4 * 44100)), r.sr);
-    CHECKM(hz > 70 && hz < 150, "pitched kick settled %g (want ~100)", hz);
-}
-
-static void testRebuildBlendAB() {
-    Machine m; Wave one; one.resize((int)(44100 * 0.8), 44100); addKick(one, 0, 50, 0.9f);
-    m.loadWave(one);
-    for (auto& e : m.events) e.lane = 0;
-    m.lanes[0].kind = LANE_KICK;
-    auto dry = m.render(false, false);
-    m.rebuildLane(0);
-    CHECK(m.lanes[0].rebuilt);
-    m.lanes[0].blend = 0;
-    auto b0 = m.render(false, false);
-    int near = 0; int N = std::min(dry.n(), b0.n());
-    for (int i = 0; i < N; ++i) if (std::abs(dry.L[(size_t)i] - b0.L[(size_t)i]) < 1e-6f) ++near;
-    CHECKM(near > N * 0.98, "blend 0 changed %d/%d", N - near, N);
-    m.lanes[0].blend = 1;
-    auto b1 = m.render(false, false);
-    CHECK(tu::peak(b1.L) > 0.05f && tu::finite(b1.L));
-    // not identical to dry
-    int diff = 0; for (int i = 0; i < N; ++i) if (std::abs(dry.L[(size_t)i] - b1.L[(size_t)i]) > 1e-4f) ++diff;
-    CHECK(diff > N / 5);
-    // A/B original
-    m.abOriginal = true;
-    auto ab = m.render(true, false);
-    int same = 0, M = std::min(ab.n(), one.n());
-    for (int i = 0; i < M; ++i) if (ab.L[(size_t)i] == one.L[(size_t)i]) ++same;
-    CHECKM(same == M, "A/B not exact (%d/%d)", same, M);
-}
-
-static void testKeepInKeyAndExport() {
-    Machine m; Wave one; one.resize((int)(44100 * 0.7), 44100); addKick(one, 0, 50, 0.9f);
-    m.loadWave(one);
-    for (auto& e : m.events) e.lane = 0;
-    m.lanes[0].kind = LANE_KICK;
-    m.keyPc = 4; m.scale = SC_MINOR; m.keepInKey = true; m.snapToRoot = false;
-    // G1 is in E minor — display should be a G
-    float hz = m.laneDisplayHz(0);
-    auto n = noteCentsFromHz(hz);
-    CHECKM(n.valid && n.pc == 7, "display pc %d hz %g", n.pc, hz);
-    m.snapToRoot = true;
-    hz = m.laneDisplayHz(0);
-    n = noteCentsFromHz(hz);
-    CHECKM(n.valid && n.pc == 4, "root snap pc %d hz %g", n.pc, hz);
-    auto mid = m.exportMidi();
-    CHECK(mid.size() > 20);
-    CHECK(mid[0] == 'M' && mid[1] == 'T' && mid[2] == 'h' && mid[3] == 'd');
-}
-
-
-static void testBusierAccuracy() {
-    auto w = makeKitLoop(44100, 120, 2, true); // hats also on kicks (overlap)
-    auto sl = sliceAndClassify(w);
-    int step = (int)std::lround(44100 * 60.0 / 120.0 / 4.0); // 16th
-    int ok = 0, n = 0;
-    int conf[4][4] {};
-    // Score non-overlapping hits: off-beat hats (every 8th that is not a quarter) and perc on last 16ths.
-    // Quarters with isolated snares (odd beats have snare+hat overlap — skip or accept snare/kick majority).
-    for (int b = 0; b < 8; ++b) {
-        int q = b * step * 4;
-        int eighth = q + step * 2;
-        // off-beat hat should be its own slice, labelled hats
-        int want = eighth, best = -1, bestE = 1 << 30;
-        for (int j = 0; j < (int)sl.size(); ++j) {
-            int e = std::abs(sl[(size_t)j].start - want);
-            if (e < bestE) { bestE = e; best = j; }
-        }
-        if (best >= 0 && bestE < (int)(0.04 * 44100)) {
-            int pred = sl[(size_t)best].lane;
-            conf[LANE_HATS][pred]++; if (pred == LANE_HATS) ++ok; ++n;
-        }
-        // downbeat: overlapping kick/snare + hat stays one slice. Accept kick on even, snare on odd.
-        want = q; best = -1; bestE = 1 << 30;
-        for (int j = 0; j < (int)sl.size(); ++j) {
-            int e = std::abs(sl[(size_t)j].start - want);
-            if (e < bestE) { bestE = e; best = j; }
-        }
-        int expect = (b % 2 == 0) ? LANE_KICK : LANE_SNARE;
-        if (best >= 0 && bestE < (int)(0.04 * 44100)) {
-            int pred = sl[(size_t)best].lane;
-            // overlapping hat is allowed to stay in the same slice — label should be the body (kick/snare)
-            conf[expect][pred]++; if (pred == expect) ++ok; ++n;
-        }
-        if (b % 4 == 3) {
-            want = q + step * 3; best = -1; bestE = 1 << 30;
-            for (int j = 0; j < (int)sl.size(); ++j) {
-                int e = std::abs(sl[(size_t)j].start - want);
-                if (e < bestE) { bestE = e; best = j; }
-            }
-            if (best >= 0 && bestE < (int)(0.04 * 44100)) {
-                int pred = sl[(size_t)best].lane;
-                conf[LANE_PERC][pred]++; if (pred == LANE_PERC) ++ok; ++n;
-            }
-        }
-    }
-    double acc = n ? 100.0 * ok / n : 0;
-    std::printf("  busier loop accuracy: %d/%d = %.1f%% (onsets %zu)\n", ok, n, acc, sl.size());
-    CHECKM(n >= 14 && acc >= 85.0, "busier accuracy %.1f%% on %d", acc, n);
-}
-
-static void testControlsAndSat() {
-    // saturation curves: 0 stays 0; hard clip rails; tape is odd-symmetric
+static void testSatAndClip() {
     CHECK(std::abs(softTape(0, 0.8f)) < 1e-7f && std::abs(tubeSat(0, 0.8f)) < 1e-7f && hardClip(0, 0.8f) == 0);
     CHECK(std::abs(softTape(0.9f, 0.7f) + softTape(-0.9f, 0.7f)) < 1e-6f);
     CHECK(hardClip(4.f, 1.f) == 1.f && hardClip(-4.f, 1.f) == -1.f);
     CHECK(std::abs(fuzzSat(0.8f, 1.f)) <= 1.f);
-    // decay shortens the tail
-    Machine m; Wave one; one.resize((int)(44100 * 0.7), 44100); addKick(one, 0, 50, 0.9f);
-    m.loadWave(one);
-    for (auto& e : m.events) e.lane = 0;
-    auto full = m.render(false, false);
-    m.lanes[0].decay = 0.25f;
-    auto shortn = m.render(false, false);
-    auto eFull = tu::rms(full.L, (size_t)(0.15 * 44100), (size_t)(0.35 * 44100));
-    auto eShort = tu::rms(shortn.L, (size_t)(0.15 * 44100), (size_t)(0.35 * 44100));
-    CHECKM(eShort < 0.5 * eFull, "decay tail %g vs %g", eShort, eFull);
-    // swing moves odd 16ths later
-    Machine s; auto w = makeKitLoop(); s.loadWave(w);
-    auto dry = s.render(false, false);
-    if (!s.lanes.empty()) s.lanes[2].swing = 0.8f; // hats
-    auto wet = s.render(false, false);
-    CHECK(tu::finite(wet.L) && tu::peak(wet.L) > 0);
-    int diff = 0; int N = std::min(dry.n(), wet.n());
-    for (int i = 0; i < N; ++i) if (std::abs(dry.L[(size_t)i] - wet.L[(size_t)i]) > 1e-5f) ++diff;
-    CHECK(diff > 100);
-    // randomize + undo, copy, ghosts, room, humanize all produce finite audio
-    int ev = (int)s.events.size();
-    s.copyEvent(0);
-    CHECK((int)s.events.size() == ev + 1);
-    s.doUndo();
-    CHECK((int)s.events.size() == ev);
-    float p0 = s.lanes[0].pitch;
-    s.randomizeLane(0, 42);
-    CHECK(s.lanes[0].pitch != p0);
-    s.doUndo();
-    CHECK(s.lanes[0].pitch == p0);
-    s.lanes[1].ghosts = 0.8f; s.lanes[0].room = 0.6f; s.lanes[2].humanize = 0.5f;
-    auto fx = s.render(false, false);
-    CHECK(tu::finite(fx.L) && tu::peak(fx.L) > 0 && tu::peak(fx.L) < 8.f);
-    // isolated lane export is quieter on muted other lanes
-    auto iso = s.renderLane(0);
-    CHECK(tu::finite(iso.L) && iso.n() > 0);
+    CHECK(crunchSample(0.3f, CR_TAPE, 0.f) == 0.3f);
+    float c = dbToGain(-0.1f);
+    CHECK(clipToCeil(0.5f, c) == 0.5f);
+    CHECK(clipToCeil(0.f, c) == 0.f);
+    CHECK(std::abs(clipToCeil(-0.4f, c) + 0.4f) < 1e-12f);
+    CHECK(clipToCeil(4.f, c) <= c + 1e-6f);
+    CHECK(clipToCeil(-4.f, c) >= -c - 1e-6f);
+    // pan 0 / width 1 leave a stereo pair untouched
+    float l = 0.31f, r = -0.17f;
+    applyPan(l, r, 0.f); applyWidth(l, r, 1.f);
+    CHECK(l == 0.31f && r == -0.17f);
 }
 
-static void testPlaybackSync() {
-    Machine m; auto w = makeKitLoop(44100, 120, 2);
-    m.loadWave(w);
-    auto cache = m.render(false, false);
-    CHECK(tu::finite(cache.L) && tu::peak(cache.L) > 0.05f && tu::peak(cache.L) < 4.f);
-    std::vector<float> L(512), R(512);
-    m.mixAt(L.data(), R.data(), 512, 120, 0, cache);
-    CHECK(tu::finite(L) && tu::peak(L) >= 0);
-    // limiter / safety on bus
-    m.bus.applyPreset(BUS_SMASHED);
-    auto wet = m.render(true, false);
-    CHECK(tu::finite(wet.L) && tu::peak(wet.L) <= 0.98f + 1e-4f);
+static void testCleanBitExact() {
+    for (double sr : {44100.0, 48000.0}) {
+        Engine e; e.prepare(sr, 256);
+        CHECK(e.latencySamples() == 0);
+        auto b = makeKit(sr, 120, 2, 0.95f);
+        // also a 0 dBFS burst
+        if (b.n() > 10) { b.L[8] = 1.f; b.R[8] = -1.f; }
+        auto dryL = b.L, dryR = b.R;
+        b.process(e, 256);
+        int n = b.n();
+        int same = tu::ident(b.L, dryL) + tu::ident(b.R, dryR);
+        CHECKM(same == n * 2, "clean bit-exact %d/%d at sr=%.0f peak was %g", same, n * 2, sr, tu::peak(dryL));
+        CHECK(e.latencySamples() == 0);
+    }
+}
+
+static void testSplitNull() {
+    Engine e; e.prepare(44100, 512);
+    Params p; p.mode = MODE_SPLIT;
+    e.setParams(p);
+    auto b = makeKit(44100, 120, 2, 0.9f);
+    auto dryL = b.L, dryR = b.R;
+    b.process(e, 128);
+    CHECK(tu::ident(b.L, dryL) == (int)b.L.size());
+    CHECK(tu::ident(b.R, dryR) == (int)b.R.size());
+    // moved crossovers, still unity
+    p.lowSplitHz = 120; p.highSplitHz = 7000;
+    e.prepare(44100, 512); e.setParams(p);
+    Buf c = makeKit();
+    auto dL = c.L, dR = c.R;
+    c.process(e, 64);
+    double rd = tu::rmsDiff(c.L, dL);
+    CHECKM(rd < 1e-7, "split reconstruct rms %g", rd);
+}
+
+static void testLatencyImpulse() {
+    // Default: peak of an impulse stays at sample 0, reported 0.
+    for (double sr : {44100.0, 48000.0}) {
+        Engine e; e.prepare(sr, 64);
+        Params p; // defaults, plus some processing so we are not the early-return path
+        p.wPunch = 0.3f; p.wCrunch = 0.4f; p.wGlue = 0.2f;
+        e.setParams(p);
+        CHECK(e.latencySamples() == 0);
+        Buf b((int)sr / 10);
+        b.L[0] = 1; b.R[0] = 1;
+        b.process(e, 64);
+        int k = tu::argmaxAbs(b.L);
+        CHECKM(k == 0, "impulse peak at %d (sr=%.0f) with processing on, reported %d", k, sr, e.latencySamples());
+        CHECK(tu::finite(b.L) && tu::peak(b.L) <= dbToGain(p.ceilingDb) + 1e-5f);
+    }
+    // Lookahead: peak delayed by exactly latencySamples()
+    Engine e; e.prepare(48000, 64);
+    Params p; p.lookahead = true; p.wPunch = 0.2f;
+    e.setParams(p);
+    int lat = e.latencySamples();
+    CHECKM(lat > 0 && lat == (int)std::lround(0.0015 * 48000), "lookahead samples %d", lat);
+    Buf b(4000);
+    b.L[0] = 1; b.R[0] = 0.5f;
+    b.process(e, 64);
+    int k = tu::argmaxAbs(b.L);
+    CHECKM(k == lat, "lookahead impulse at %d want %d", k, lat);
+    CHECK(tu::peak(b.L) <= dbToGain(p.ceilingDb) + 1e-5f);
+}
+
+static void testCeilingStress() {
+    const float ceil = dbToGain(-0.1f);
+    auto run = [&](const char* name, Params p, double sr, float boost) {
+        Engine e; e.prepare(sr, 512);
+        e.setParams(p);
+        auto b = makeKit(sr, 120, 2, 0.95f);
+        for (auto& v : b.L) v *= boost;
+        for (auto& v : b.R) v *= boost;
+        // plus a square-like click
+        if (b.n() > 1000) { for (int i = 200; i < 240; ++i) { b.L[(size_t)i] = boost; b.R[(size_t)i] = -boost; } }
+        b.process(e, 512);
+        float pk = tu::peak2(b.L, b.R);
+        CHECKM(tu::finite(b.L) && tu::finite(b.R), "%s not finite", name);
+        bool bypass = p.isFullBypass() && !p.lookahead;
+        if (!bypass)
+            CHECKM(pk <= ceil + 1e-5f, "%s peak %g > ceil %g (sr=%.0f boost=%g)", name, pk, ceil, sr, boost);
+        std::printf("    %-32s  peak=%.5f  ceil=%.5f  sr=%.0f  boost=%.1f  bypass=%d\n", name, pk, ceil, sr, boost, (int)bypass);
+        return pk;
+    };
+    // For bypass we must NOT enforce the ceiling. Separate check:
+    {
+        Engine e; e.prepare(44100, 256);
+        Buf b(2048); b.L[10] = 1; b.R[10] = 1;
+        b.process(e);
+        CHECK(b.L[10] == 1.f); // clean does not clip legal? 1.0 is above -0.1dB but Clean bypasses ceiling
+    }
+    Params sm; sm.applyBusPreset(BUS_SMASHED); sm.bPunch = 1; sm.bCrunch = 1; sm.bSquash = 1; sm.bPump = 1; sm.bRoom = 1;
+    run("Smashed Room maxed 44.1", sm, 44100, 1.0f);
+    run("Smashed Room maxed 48k +6 dB", sm, 48000, 2.0f);
+    Params wh; wh.wPunch = 1; wh.wBody = 1; wh.wSnap = 1; wh.wCrunch = 1; wh.wGlue = 1; wh.wRoom = 1; wh.wWidth = 2;
+    wh.applyBusPreset(BUS_SMASHED);
+    run("Whole max + Smashed 48k +6 dB", wh, 48000, 2.0f);
+    Params sp; sp.mode = MODE_SPLIT;
+    for (int i = 0; i < kParts; ++i) { sp.part[i].level = 2; sp.part[i].punch = 1; sp.part[i].crunch = 1; sp.part[i].decay = 0.5f; }
+    sp.applyBusPreset(BUS_SMASHED);
+    run("Split max + Smashed 44.1 +6 dB", sp, 44100, 2.0f);
+    Params la = wh; la.lookahead = true;
+    run("Lookahead + Whole max 48k +6 dB", la, 48000, 2.0f);
+
+    // several block sizes
+    for (int bs : {64, 256, 512, 1024}) {
+        Engine e; e.prepare(48000, bs);
+        Params p; p.applyBusPreset(BUS_SMASHED); p.bPunch = 1; p.bCrunch = 1; p.bSquash = 1;
+        e.setParams(p);
+        auto b = makeKit(48000, 120, 1, 1.0f);
+        for (auto& v : b.L) v *= 2; for (auto& v : b.R) v *= 2;
+        b.process(e, bs);
+        CHECKM(tu::peak2(b.L, b.R) <= ceil + 1e-5f, "block %d peak %g", bs, tu::peak2(b.L, b.R));
+    }
+}
+
+static void testBusPresetsAndAgc() {
+    Engine e; e.prepare(44100, 256);
+    auto kit = makeKit();
+    auto run = [&](Params p) {
+        Engine x; x.prepare(44100, 256); x.setParams(p);
+        Buf b = kit;
+        b.process(x);
+        return tu::rms(b.L);
+    };
+    Params c;
+    double rClean = run(c);
+    for (int i = 1; i < kBusPresets; ++i) {
+        Params p; p.applyBusPreset(i);
+        Engine x; x.prepare(44100, 256); x.setParams(p);
+        Buf b = kit; auto dry = b.L;
+        b.process(x);
+        CHECK(tu::finite(b.L) && tu::peak(b.L) > 0.02f);
+        CHECK(tu::peak(b.L) <= dbToGain(-0.1f) + 1e-5f);
+        // clearly different from clean
+        CHECK(tu::rmsDiff(b.L, dry) > 1e-4);
+        // not "just several dB louder" — compensated
+        double r = tu::rms(b.L);
+        double db = 20 * std::log10(std::max(r, 1e-8) / std::max(rClean, 1e-8));
+        CHECKM(db < 6.0, "preset %s RMS jump %+0.2f dB", busPresetName(i), db);
+        std::printf("    bus %-16s  rms %+0.2f dB vs clean\n", busPresetName(i), db);
+        // back to clean is exact
+        p.applyBusPreset(BUS_CLEAN);
+        x.setParams(p); x.reset();
+        Buf c2 = kit; auto d2 = c2.L;
+        c2.process(x);
+        CHECK(tu::ident(c2.L, d2) == c2.n());
+    }
+    // Whole presets also produce audio and respect the ceiling
+    for (int i = 1; i < kWholePresets; ++i) {
+        Params p; p.applyWholePreset(i);
+        Engine x; x.prepare(44100, 256); x.setParams(p);
+        Buf b = kit; b.process(x);
+        CHECK(tu::finite(b.L) && tu::peak(b.L) <= dbToGain(-0.1f) + 1e-5f && tu::peak(b.L) > 0.02f);
+    }
+}
+
+static void testSplitSanity() {
+    // Isolated hits: Listen Kick during a kick should be louder than Listen Hats, and vice versa.
+    const double sr = 44100;
+    Buf b((int)sr * 2);
+    int kAt = 0, sAt = (int)(0.5 * sr), hAt = (int)(1.0 * sr), pAt = (int)(1.5 * sr);
+    addKick(b.L, b.R, kAt, sr, 50, 0.9f);
+    addSnare(b.L, b.R, sAt, sr, 0.7f);
+    addHat(b.L, b.R, hAt, sr, 0.5f, 0.04f);
+    addPerc(b.L, b.R, pAt, sr, 220, 0.6f);
+
+    auto listenRms = [&](int part, int at, int win) {
+        Engine e; e.prepare(sr, 256);
+        Params p; p.mode = MODE_SPLIT;
+        for (int i = 0; i < kParts; ++i) p.part[i].listen = (i == part);
+        e.setParams(p);
+        Buf x = b;
+        x.process(e);
+        return tu::rms(x.L, (size_t)at, (size_t)(at + win));
+    };
+    int win = (int)(0.12 * sr);
+    double kOnK = listenRms(PART_KICK, kAt, win), hOnK = listenRms(PART_HATS, kAt, win);
+    double hOnH = listenRms(PART_HATS, hAt, win), kOnH = listenRms(PART_KICK, hAt, win);
+    double sOnS = listenRms(PART_SNARE, sAt, win);
+    double pOnP = listenRms(PART_PERC, pAt, win);
+    std::printf("    listen  kick@kick=%.4f hats@kick=%.4f  hats@hat=%.4f kick@hat=%.4f  snare@snare=%.4f perc@perc=%.4f\n",
+                kOnK, hOnK, hOnH, kOnH, sOnS, pOnP);
+    CHECKM(kOnK > hOnK * 2.0, "kick listen on kick %g vs hats %g", kOnK, hOnK);
+    CHECKM(hOnH > kOnH * 2.0, "hat listen on hat %g vs kick %g", hOnH, kOnH);
+    CHECKM(sOnS > 0.02, "snare listen energy %g", sOnS);
+    CHECKM(pOnP > 0.01, "perc listen energy %g", pOnP);
+    // Mute hats should drop hat-window energy vs full
+    Engine e; e.prepare(sr, 256);
+    Params p; p.mode = MODE_SPLIT; p.part[PART_HATS].mute = true;
+    e.setParams(p);
+    Buf x = b; x.process(e);
+    double mutedHats = tu::rms(x.L, (size_t)hAt, (size_t)(hAt + win));
+    Engine e2; e2.prepare(sr, 256);
+    Params p2; p2.mode = MODE_SPLIT; e2.setParams(p2);
+    Buf y = b; y.process(e2);
+    double fullHats = tu::rms(y.L, (size_t)hAt, (size_t)(hAt + win));
+    CHECKM(mutedHats < 0.4 * fullHats, "mute hats %g vs %g", mutedHats, fullHats);
+}
+
+static void testControlsMove() {
+    Engine e; e.prepare(44100, 256);
+    auto kit = makeKit();
+    auto dry = kit;
+    // Each meaningful control should change the audio (except ones at bypass).
+    struct C { const char* n; Params p; };
+    std::vector<C> cs;
+    auto add = [&](const char* n, Params p) { cs.push_back({n, p}); };
+    { Params p; p.wPunch = 0.8f; add("punch", p); }
+    { Params p; p.wBody = 0.8f; add("body", p); }
+    { Params p; p.wSnap = 0.8f; add("snap", p); }
+    { Params p; p.wCrunch = 0.7f; add("crunch", p); }
+    { Params p; p.wTone = -0.7f; add("tone", p); }
+    { Params p; p.wGlue = 0.7f; add("glue", p); }
+    { Params p; p.wRoom = 0.6f; add("room", p); }
+    { Params p; p.wWidth = 0.2f; add("width", p); }
+    { Params p; p.outputDb = -6.f; add("output", p); }
+    { Params p; p.mix = 0.5f; p.wPunch = 0.9f; add("mix", p); }
+    { Params p; p.applyBusPreset(BUS_TAPE); add("tape", p); }
+    { Params p; p.mode = MODE_SPLIT; p.part[0].level = 0.2f; add("kick level", p); }
+    int ok = 0;
+    for (auto& c : cs) {
+        Engine x; x.prepare(44100, 256); x.setParams(c.p);
+        Buf b = kit; b.process(x);
+        CHECKM(tu::finite(b.L) && tu::finite(b.R), "%s not finite", c.n);
+        CHECKM(tu::peak2(b.L, b.R) <= dbToGain(-0.1f) + 1e-5f || c.p.isFullBypass(), "%s peaked %g", c.n, tu::peak(b.L));
+        bool changed = tu::rmsDiff(b.L, dry.L) > 1e-5;
+        CHECKM(changed, "%s did not change the signal", c.n);
+        if (changed) ++ok;
+    }
+    std::printf("    controls moved audio: %d/%d\n", ok, (int)cs.size());
+    // Mix at 0 with processing equals dry (and under ceiling... dry may be >ceil, mix 0 is dry)
+    {
+        Params p; p.wPunch = 1; p.mix = 0;
+        Engine x; x.prepare(44100, 256); x.setParams(p);
+        Buf b = kit; auto d = b.L;
+        b.process(x);
+        // mix 0 still goes through ceiling because processing path is "on"
+        // Plan: Mix at 0% matches dry (bus off). If ceiling is on the wet+dry mix, mix 0 is dry then ceiling.
+        // I'll accept that mix 0 + ceiling may soften overs. On this kit (peak ~1.27?) check either exact or only ceiling difference.
+        float pk = tu::peak(d);
+        if (pk <= dbToGain(-0.1f)) {
+            CHECKM(tu::ident(b.L, d) == b.n(), "mix 0 not exact on legal dry");
+        } else {
+            CHECK(tu::peak(b.L) <= dbToGain(-0.1f) + 1e-5f);
+        }
+    }
+    // Output -inf ~ silence
+    {
+        Params p; p.outputDb = -120.f; p.wPunch = 0.5f;
+        Engine x; x.prepare(44100, 256); x.setParams(p);
+        Buf b = kit; b.process(x);
+        CHECK(tu::peak(b.L) < 1e-5f);
+    }
+}
+
+static void testCpu() {
+    Engine e; e.prepare(48000, 512);
+    Params p; p.mode = MODE_SPLIT;
+    p.applyBusPreset(BUS_SMASHED);
+    p.wCrunch = 0.5f;
+    for (int i = 0; i < kParts; ++i) { p.part[i].punch = 0.5f; p.part[i].crunch = 0.4f; }
+    e.setParams(p);
+    const int sr = 48000, sec = 2, n = sr * sec, bs = 512;
+    std::vector<float> L((size_t)n), R((size_t)n);
+    for (int i = 0; i < n; ++i) { L[(size_t)i] = 0.2f * std::sin(2 * float(M_PI) * 80 * i / sr); R[(size_t)i] = L[(size_t)i]; }
+    // warm up
+    e.process(L.data(), R.data(), bs);
+    auto t0 = std::chrono::steady_clock::now();
+    int blocks = 0;
+    for (int i = 0; i < n; i += bs) {
+        int m = std::min(bs, n - i);
+        e.process(L.data() + i, R.data() + i, m);
+        ++blocks;
+    }
+    double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    double per = ms / blocks;
+    double rt = 1000.0 * bs / sr;
+    std::printf("    CPU: %.3f ms / 512-sample block (real-time is %.3f ms), 2s in %.2f ms\n", per, rt, ms);
+    CHECKM(per < 1.0, "CPU %.3f ms/block >= 1 ms", per);
+    CHECKM(ms < 2000.0, "2s buffer took %.2f ms (not under real time?)", ms);
 }
 
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     struct T { const char* n; void (*f)(); } t[] = {
-        {"key math", testKeyMath},
-        {"onsets + labels (sparse)", testOnsetsAndLabels},
-        {"overlapping hits stay together", testOverlapStaysTogether},
-        {"clean isolated accuracy", testAccuracy},
-        {"lanes / arrange / undo", testLanesArrangeUndo},
-        {"bus clean + DSP", testBusCleanAndDSP},
-        {"rebuild / blend / A-B", testRebuildBlendAB},
-        {"keep in key + MIDI export", testKeepInKeyAndExport},
-        {"busier loop accuracy", testBusierAccuracy},
-        {"controls / sat / decay / swing", testControlsAndSat},
-        {"playback + safety", testPlaybackSync},
+        {"sat / ceiling / pan-width identity", testSatAndClip},
+        {"Clean bit-exact bypass (44.1 and 48k)", testCleanBitExact},
+        {"Split unity reconstruction", testSplitNull},
+        {"latency vs impulse (0 and lookahead)", testLatencyImpulse},
+        {"ceiling holds on stress signals", testCeilingStress},
+        {"bus + whole presets, AGC, return to Clean", testBusPresetsAndAgc},
+        {"Split listen/mute sanity on a kit", testSplitSanity},
+        {"controls change audio, mix 0, output -inf", testControlsMove},
+        {"CPU budget", testCpu},
     };
     for (auto& x : t) {
         int f0 = g_fail; auto t0 = std::chrono::steady_clock::now();

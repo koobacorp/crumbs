@@ -8,37 +8,74 @@ static int passed = 0, failed = 0;
 #define CHECK(x) do { if (x) ++passed; else { ++failed; std::printf("FAIL line %d: %s\n", __LINE__, #x); } } while (0)
 #define CHECKM(x, ...) do { if (x) ++passed; else { ++failed; std::printf("FAIL line %d: %s | ", __LINE__, #x); std::printf(__VA_ARGS__); std::printf("\n"); } } while (0)
 
-struct Head : juce::AudioPlayHead {
-    bool playing = false; double bpm = 120, ppq = 0;
-    juce::Optional<PositionInfo> getPosition() const override {
-        PositionInfo p; p.setIsPlaying(playing); p.setBpm(bpm); p.setPpqPosition(ppq); return p;
+static void addKick(std::vector<float>& L, std::vector<float>& R, int at, double sr, float amp = 0.9f) {
+    int n = (int)L.size(); float ph = 0;
+    for (int i = 0; i < (int)(0.4 * sr) && at + i < n; ++i) {
+        float t = float(i) / float(sr);
+        float f = 50.f * std::exp2(18.f * std::exp(-t / 0.008f) / 12.f);
+        ph += 2.f * float(M_PI) * f / float(sr);
+        float s = amp * std::exp(-t / 0.28f) * std::sin(ph);
+        L[(size_t)(at + i)] += s; R[(size_t)(at + i)] += s;
     }
-};
+}
+static void addHat(std::vector<float>& L, std::vector<float>& R, int at, double sr, float amp = 0.35f) {
+    int n = (int)L.size(); uint32_t rng = 0xC0FFEEu + (uint32_t)at;
+    float hp = 0, a = 1.f - std::exp(-2.f * float(M_PI) * 7000.f / float(sr));
+    for (int i = 0; i < (int)(0.15 * sr) && at + i < n; ++i) {
+        float t = float(i) / float(sr);
+        rng = rng * 1664525u + 1013904223u;
+        float noise = (float((rng >> 9) & 0xFFFF) / 32768.f - 1.f);
+        hp += a * (noise - hp);
+        float s = amp * (noise - hp) * std::exp(-t / 0.04f);
+        L[(size_t)(at + i)] += s; R[(size_t)(at + i)] += s;
+    }
+}
+
 struct Rig {
-    CrumbsProcessor p; Head head; double sr; int block;
-    std::vector<float> L, R;
+    CrumbsProcessor p;
+    double sr; int block;
+    std::vector<float> L, R, inL, inR;
     Rig(double rate = 44100, int bs = 256) : sr(rate), block(bs) {
-        p.setPlayHead(&head); p.setRateAndBufferSizeDetails(sr, block); p.prepareToPlay(sr, block);
+        p.setRateAndBufferSizeDetails(sr, block);
+        juce::AudioProcessor::BusesLayout layout;
+        layout.inputBuses.add(juce::AudioChannelSet::stereo());
+        layout.outputBuses.add(juce::AudioChannelSet::stereo());
+        p.setBusesLayout(layout);
+        p.prepareToPlay(sr, block);
     }
-    double run(double seconds, std::function<void(int64_t, juce::MidiBuffer&)> midiAt = {}) {
+    void fillKit(double seconds) {
+        int n = (int)(seconds * sr);
+        inL.assign((size_t)n, 0); inR.assign((size_t)n, 0);
+        int step = (int)std::lround(sr * 60.0 / 120.0);
+        for (int i = 0; i < n; i += step) {
+            addKick(inL, inR, i, sr, 0.9f);
+            addHat(inL, inR, i + step / 2, sr, 0.35f);
+        }
+    }
+    double run(const std::vector<float>& srcL, const std::vector<float>& srcR) {
         int nCh = p.getTotalNumOutputChannels();
         L.clear(); R.clear();
-        int64_t n = (int64_t)(seconds * sr), pos = 0; double t = 0;
-        juce::AudioBuffer<float> buf(nCh, block);
+        int n = (int)srcL.size(), pos = 0;
+        juce::AudioBuffer<float> buf(std::max(2, nCh), block);
+        double t = 0;
         while (pos < n) {
-            int m = (int)std::min<int64_t>(block, n - pos);
-            buf.setSize(nCh, m, false, false, true); buf.clear();
-            juce::MidiBuffer midi; if (midiAt) midiAt(pos, midi);
+            int m = std::min(block, n - pos);
+            buf.setSize(std::max(2, nCh), m, false, false, true);
+            for (int i = 0; i < m; ++i) {
+                buf.setSample(0, i, srcL[(size_t)(pos + i)]);
+                buf.setSample(1, i, srcR[(size_t)(pos + i)]);
+            }
+            juce::MidiBuffer midi;
             auto t0 = std::chrono::steady_clock::now();
             p.processBlock(buf, midi);
             t += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-            if (nCh > 0) L.insert(L.end(), buf.getReadPointer(0), buf.getReadPointer(0) + m);
-            if (nCh > 1) R.insert(R.end(), buf.getReadPointer(1), buf.getReadPointer(1) + m);
-            if (head.playing) head.ppq += m * head.bpm / 60.0 / sr;
+            L.insert(L.end(), buf.getReadPointer(0), buf.getReadPointer(0) + m);
+            R.insert(R.end(), buf.getReadPointer(1), buf.getReadPointer(1) + m);
             pos += m;
         }
         return t;
     }
+    double runKit(double seconds) { fillKit(seconds); return run(inL, inR); }
     float peak() const {
         float pk = 0; for (float v : L) pk = std::max(pk, std::abs(v)); for (float v : R) pk = std::max(pk, std::abs(v)); return pk;
     }
@@ -46,6 +83,11 @@ struct Rig {
         for (float v : L) if (!std::isfinite(v)) return false;
         for (float v : R) if (!std::isfinite(v)) return false;
         return true;
+    }
+    int identicalToInput() const {
+        int s = 0, n = (int)std::min(L.size(), inL.size());
+        for (int i = 0; i < n; ++i) if (L[(size_t)i] == inL[(size_t)i] && R[(size_t)i] == inR[(size_t)i]) ++s;
+        return s;
     }
 };
 
@@ -63,16 +105,24 @@ static void savePng(juce::Component& c, const juce::String& name) {
 int main(int, char**) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     juce::ScopedJuceInitialiser_GUI gui;
-    std::puts("CRUMBS plugin tests");
+    std::puts("CRUMBS v2 plugin tests");
 
-    { std::puts("- identity, parameters");
+    { std::puts("- identity, buses, parameters");
       Rig r;
       CHECK(r.p.getName() == "CRUMBS");
-      CHECK(r.p.acceptsMidi() && !r.p.producesMidi() && !r.p.isMidiEffect());
+      CHECK(!r.p.acceptsMidi() && !r.p.producesMidi() && !r.p.isMidiEffect());
+      CHECK(r.p.getLatencySamples() == 0);
       CHECK((int)r.p.getParameters().size() == kNumParams);
       int automatable = 0, texts = 0;
       for (auto* prm : r.p.getParameters()) { automatable += prm->isAutomatable(); texts += prm->getCurrentValueAsText().isNotEmpty(); }
       CHECK(automatable == kNumParams); CHECK(texts == kNumParams);
+      juce::AudioProcessor::BusesLayout lay;
+      lay.inputBuses.add(juce::AudioChannelSet::stereo());
+      lay.outputBuses.add(juce::AudioChannelSet::stereo());
+      CHECK(r.p.checkBusesLayoutSupported(lay));
+      juce::AudioProcessor::BusesLayout inst;
+      inst.outputBuses.add(juce::AudioChannelSet::stereo()); // no input — instrument layout
+      CHECK(!r.p.checkBusesLayoutSupported(inst));
       juce::Random rnd(3); int okRound = 0;
       for (int i = 0; i < kNumParams; ++i) {
           auto* prm = r.p.param(i);
@@ -83,144 +133,204 @@ int main(int, char**) {
           okRound += ok;
       }
       CHECKM(okRound == kNumParams, "roundtrip %d/%d", okRound, kNumParams);
-      // restore defaults that matter
-      r.p.setValue(G_BUS, 0); r.p.setValue(G_MODE, 0); r.p.setValue(G_AB, 0);
-      std::printf("  %d parameters, all automatable\n", kNumParams);
+      // restore defaults
+      r.p.applyBusPreset(0); r.p.applyWholePreset(0);
+      r.p.setValue(G_MODE, 0); r.p.setValue(G_AB, 0); r.p.setValue(G_MIX, 1); r.p.setValue(G_OUTPUT, 0);
+      r.p.setValue(G_LOOKAHEAD, 0);
+      std::printf("  %d parameters, all automatable, stereo insert\n", kNumParams);
     }
 
-    { std::puts("- load synthetic loop, clean default, playback");
-      Rig r; CHECK(r.p.loadTestLoop());
-      CHECK(r.p.hasLoop());
-      CHECK(r.p.machine().lanes.size() == 4);
-      CHECK(r.p.machine().bus.preset == BUS_CLEAN && r.p.machine().bus.isClean());
-      CHECK(r.p.machine().events.size() > 0);
-      r.head.playing = true; r.head.ppq = 0;
-      r.p.rebuildNow();
-      r.run(2.0);
+    { std::puts("- Clean bit-exact null, 0 latency");
+      Rig r;
+      CHECK(r.p.getLatencySamples() == 0);
+      r.runKit(1.5);
       CHECK(r.finite());
-      CHECKM(r.peak() > 0.05f && r.peak() <= 1.05f, "peak %f", r.peak());
-      // host stopped is silent in loop mode
-      r.head.playing = false;
-      r.run(0.3);
-      CHECK(r.peak() == 0);
+      CHECKM(r.identicalToInput() == (int)r.inL.size(), "clean identical %d/%d peak in %f out %f",
+             r.identicalToInput(), (int)r.inL.size(), [&]{ float p=0; for (float v:r.inL) p=std::max(p,std::abs(v)); return p; }(), r.peak());
+      CHECK(r.p.getLatencySamples() == 0);
     }
 
-    { std::puts("- every control (finite audio, Clean bypass, bus presets, lane knobs)");
-      Rig r; r.p.loadTestLoop(); r.p.rebuildNow();
-      r.head.playing = true;
-      // Clean: output matches pre-bus (already clean)
-      r.p.setValue(G_BUS, 0); r.p.rebuildNow(); r.run(1.0);
-      float cleanPk = r.peak(); CHECK(r.finite() && cleanPk > 0.05f);
-      for (int preset = 1; preset <= 4; ++preset) {
-          r.p.setValue(G_BUS, (float)preset); r.p.rebuildNow(); r.head.ppq = 0; r.run(1.0);
-          CHECKM(r.finite() && r.peak() > 0.02f && r.peak() <= 1.05f, "preset %d peak %f", preset, r.peak());
+    { std::puts("- A/B dry is a null, Mix 0 with processing respects ceiling or matches dry");
+      Rig r;
+      r.p.setValue(W_PUNCH, 0.8f);
+      r.p.setValue(G_AB, 1);
+      r.runKit(1.0);
+      CHECK(r.finite() && r.identicalToInput() == (int)r.inL.size());
+      r.p.setValue(G_AB, 0);
+      r.p.setValue(G_MIX, 0);
+      r.runKit(1.0);
+      float ceil = dbToGain(r.p.value(G_CEILING));
+      CHECK(r.finite() && r.peak() <= std::max(ceil, [&]{ float p=0; for (float v:r.inL) p=std::max(p,std::abs(v)); return p; }()) + 1e-5f);
+    }
+
+    { std::puts("- latency report matches impulse");
+      for (double sr : {44100.0, 48000.0}) {
+        Rig r(sr, 64);
+        r.p.setValue(W_PUNCH, 0.4f);
+        r.p.setValue(W_CRUNCH, 0.5f);
+        r.p.prepareToPlay(sr, 64);
+        CHECKM(r.p.getLatencySamples() == 0, "processed path latency %d at %.0f", r.p.getLatencySamples(), sr);
+        std::vector<float> x((size_t)sr / 20, 0.f), z = x;
+        x[0] = 1; z[0] = 1;
+        r.run(x, z);
+        int k = 0; float pk = -1;
+        for (int i = 0; i < (int)r.L.size(); ++i) if (std::abs(r.L[(size_t)i]) > pk) { pk = std::abs(r.L[(size_t)i]); k = i; }
+        CHECKM(k == 0, "impulse peak at %d sr=%.0f", k, sr);
+        CHECK(r.peak() <= dbToGain(-0.1f) + 1e-5f);
       }
-      r.p.setValue(G_BUS, 0); r.p.rebuildNow();
-      // exercise every lane control on lane 0
-      int ids[] = { lp(0,LP_LEVEL), lp(0,LP_PITCH), lp(0,LP_DECAY), lp(0,LP_TONE), lp(0,LP_CRUNCH),
-                    lp(0,LP_PAN), lp(0,LP_ROOM), lp(0,LP_SWING), lp(0,LP_HUMAN), lp(0,LP_GHOSTS),
-                    lp(0,LP_BLEND), G_PUNCH, G_CRUNCH, G_SQUASH, G_PUMP, G_BROOM, G_KEY, G_SCALE,
-                    G_KEEPKEY, G_SNAPMODE, G_CRTYPE, G_MODE };
+      Rig r(48000, 64);
+      r.p.setValue(G_LOOKAHEAD, 1);
+      r.p.prepareToPlay(48000, 64);
+      int lat = r.p.getLatencySamples();
+      int want = (int)std::lround(0.0015 * 48000);
+      CHECKM(lat == want, "reported %d want %d", lat, want);
+      std::vector<float> x(4000, 0.f), z = x; x[0] = 1; z[0] = 1;
+      r.run(x, z);
+      int k = 0; float pk = -1;
+      for (int i = 0; i < (int)r.L.size(); ++i) if (std::abs(r.L[(size_t)i]) > pk) { pk = std::abs(r.L[(size_t)i]); k = i; }
+      CHECKM(k == lat, "lookahead impulse at %d want %d", k, lat);
+      // host bypass must also delay
+      r.p.reset();
+      std::vector<float> a(4000, 0.f), b = a; a[0] = 0.7f; b[0] = 0.7f;
+      // processBlockBypassed
+      {
+        int n = (int)a.size(), pos = 0;
+        juce::AudioBuffer<float> buf(2, r.block);
+        r.L.clear(); r.R.clear();
+        while (pos < n) {
+            int m = std::min(r.block, n - pos);
+            buf.setSize(2, m, false, false, true);
+            for (int i = 0; i < m; ++i) { buf.setSample(0, i, a[(size_t)(pos+i)]); buf.setSample(1, i, b[(size_t)(pos+i)]); }
+            juce::MidiBuffer midi;
+            r.p.processBlockBypassed(buf, midi);
+            r.L.insert(r.L.end(), buf.getReadPointer(0), buf.getReadPointer(0)+m);
+            pos += m;
+        }
+        int k2 = 0; float p2 = -1;
+        for (int i = 0; i < (int)r.L.size(); ++i) if (std::abs(r.L[(size_t)i]) > p2) { p2 = std::abs(r.L[(size_t)i]); k2 = i; }
+        CHECKM(k2 == lat, "bypassed lookahead impulse at %d want %d", k2, lat);
+      }
+    }
+
+    { std::puts("- ceiling on Smashed Room maxed and stress");
+      float ceil = dbToGain(-0.1f);
+      auto stress = [&](const char* name, auto setup, double sr, int bs, float boost) {
+          Rig r(sr, bs);
+          setup(r);
+          r.fillKit(1.5);
+          for (auto& v : r.inL) v *= boost; for (auto& v : r.inR) v *= boost;
+          if ((int)r.inL.size() > 300) for (int i = 200; i < 240; ++i) { r.inL[(size_t)i] = boost; r.inR[(size_t)i] = -boost; }
+          r.run(r.inL, r.inR);
+          CHECKM(r.finite(), "%s not finite", name);
+          CHECKM(r.peak() <= ceil + 1e-5f, "%s peak %f > ceil %f", name, r.peak(), ceil);
+          std::printf("    %-28s  peak=%.5f\n", name, r.peak());
+      };
+      stress("Smashed max 44.1", [](Rig& r){ r.p.applyBusPreset(BUS_SMASHED); r.p.setValue(B_PUNCH,1); r.p.setValue(B_CRUNCH,1); r.p.setValue(B_SQUASH,1); r.p.setValue(B_ROOM,1); }, 44100, 512, 1.f);
+      stress("Smashed max 48k +6 dB", [](Rig& r){ r.p.applyBusPreset(BUS_SMASHED); r.p.setValue(B_PUNCH,1); r.p.setValue(B_CRUNCH,1); r.p.setValue(B_SQUASH,1); }, 48000, 256, 2.f);
+      stress("Whole max + smashed", [](Rig& r){ r.p.applyWholePreset(WP_WIDE); r.p.setValue(W_PUNCH,1); r.p.setValue(W_CRUNCH,1); r.p.setValue(W_GLUE,1); r.p.applyBusPreset(BUS_SMASHED); r.p.setValue(B_PUNCH,1); r.p.setValue(B_CRUNCH,1); r.p.setValue(B_SQUASH,1); }, 48000, 64, 2.f);
+      stress("Split max + smashed", [](Rig& r){
+          r.p.setValue(G_MODE, 1);
+          for (int i = 0; i < kParts; ++i) { r.p.setValue(pp(i,P_LEVEL), 2); r.p.setValue(pp(i,P_PUNCH), 1); r.p.setValue(pp(i,P_CRUNCH), 1); }
+          r.p.applyBusPreset(BUS_SMASHED); r.p.setValue(B_PUNCH,1); r.p.setValue(B_CRUNCH,1); r.p.setValue(B_SQUASH,1);
+      }, 44100, 1024, 2.f);
+    }
+
+    { std::puts("- every control, finite, Clean back to null");
+      Rig r; r.fillKit(0.8);
+      int ids[] = { W_PUNCH, W_BODY, W_SNAP, W_CRUNCH, W_TONE, W_GLUE, W_ROOM, W_WIDTH,
+                    B_PUNCH, B_CRUNCH, B_SQUASH, B_PUMP, B_ROOM, G_MIX, G_OUTPUT, G_CEILING,
+                    S_LOW, S_HIGH, W_CRTYPE, B_CRTYPE, G_MODE,
+                    pp(0,P_LEVEL), pp(0,P_PUNCH), pp(0,P_BODY), pp(0,P_DECAY), pp(0,P_CRUNCH),
+                    pp(0,P_PAN), pp(0,P_WIDTH), pp(0,P_SENS) };
       for (int id : ids) {
           auto* prm = r.p.param(id);
-          float mid = 0.7f;
-          prm->setValueNotifyingHost(mid);
-          r.p.rebuildNow(); r.head.ppq = 0; r.run(0.5);
-          CHECKM(r.finite() && r.peak() <= 0.99f, "param %d peak %f", id, r.peak());
+          prm->setValueNotifyingHost(0.7f);
+          r.run(r.inL, r.inR);
+          CHECKM(r.finite() && r.peak() <= dbToGain(-0.1f) + 1e-4f, "param %d peak %f", id, r.peak());
       }
-      r.p.setValue(lp(0, LP_MUTE), 1.f); r.p.rebuildNow();
-      // unmute
-      r.p.setValue(lp(0, LP_MUTE), 0.f);
-      r.p.setValue(G_MODE, 0); r.p.setValue(G_BUS, 0);
-      r.p.setValue(lp(0,LP_LEVEL), 1); r.p.setValue(lp(0,LP_PITCH), 0); r.p.setValue(lp(0,LP_DECAY), 1);
-      r.p.rebuildNow();
+      r.p.applyBusPreset(0); r.p.applyWholePreset(0);
+      r.p.setValue(G_MODE, 0); r.p.setValue(G_MIX, 1); r.p.setValue(G_OUTPUT, 0); r.p.setValue(G_LOOKAHEAD, 0);
+      for (int i = 0; i < kParts; ++i) {
+          r.p.setValue(pp(i,P_LEVEL), 1); r.p.setValue(pp(i,P_PUNCH), 0); r.p.setValue(pp(i,P_BODY), 0);
+          r.p.setValue(pp(i,P_DECAY), 0); r.p.setValue(pp(i,P_CRUNCH), 0); r.p.setValue(pp(i,P_PAN), 0);
+          r.p.setValue(pp(i,P_WIDTH), 1); r.p.setValue(pp(i,P_MUTE), 0); r.p.setValue(pp(i,P_LISTEN), 0); r.p.setValue(pp(i,P_SENS), 0.5f);
+      }
+      r.run(r.inL, r.inR);
+      CHECKM(r.identicalToInput() == (int)r.inL.size(), "return to clean identical %d/%d", r.identicalToInput(), (int)r.inL.size());
     }
 
-    { std::puts("- A/B, keep in key, rebuild/blend, undo, export");
-      Rig r; r.p.loadTestLoop(); r.p.rebuildNow();
-      r.p.setValue(G_AB, 1); r.p.rebuildNow();
-      CHECK(r.p.machine().abOriginal);
-      r.p.setValue(G_AB, 0);
-      // isolated 50 Hz kick so Keep in key has a clear body pitch (E minor: G1 stays, or root snap to E)
-      cr::Wave kick; kick.resize((int)(44100 * 0.7), 44100); addKick(kick, 0, 50, 0.9f);
-      r.p.loadWave(std::move(kick));
-      r.p.setValue(G_KEY, 4); r.p.setValue(G_SCALE, 1); r.p.setValue(G_KEEPKEY, 1); r.p.setValue(G_SNAPMODE, 0);
-      r.p.rebuildNow();
-      float hz = r.p.machine().laneDisplayHz(0);
-      auto n = noteCentsFromHz(hz);
-      CHECKM(n.valid && (n.pc == 7 || n.pc == 4), "keep-in-key pc %d hz %g", n.pc, hz);
-      r.p.loadTestLoop(); r.p.rebuildNow();
-      r.p.machine().rebuildLane(0);
-      r.p.pushMachineToParams(); r.p.rebuildNow();
-      CHECK(r.p.machine().lanes[0].rebuilt);
-      r.p.setValue(lp(0, LP_BLEND), 1); r.p.rebuildNow();
-      r.head.playing = true; r.run(1.0); CHECK(r.finite() && r.peak() > 0.02f);
-      int ev = (int)r.p.machine().events.size();
-      if (ev > 0) { r.p.machine().deleteEvent(0); CHECK((int)r.p.machine().events.size() == ev - 1);
-        r.p.machine().doUndo(); CHECK((int)r.p.machine().events.size() == ev); }
-      auto wav = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("crumbs-test.wav");
-      auto mid = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("crumbs-test.mid");
-      CHECK(r.p.saveAudio(wav)); CHECK(wav.getSize() > 100);
-      CHECK(r.p.saveMidi(mid)); CHECK(mid.getSize() > 20);
-      CHECK(r.p.saveAudio(wav, 0));
+    { std::puts("- bus presets differ from Clean and stay under the ceiling");
+      Rig r; r.fillKit(1.0);
+      r.run(r.inL, r.inR);
+      auto clean = r.L;
+      for (int i = 1; i <= 4; ++i) {
+          r.p.applyBusPreset(i);
+          r.run(r.inL, r.inR);
+          CHECK(r.finite() && r.peak() > 0.02f && r.peak() <= dbToGain(-0.1f) + 1e-5f);
+          int same = 0; for (size_t k = 0; k < r.L.size(); ++k) if (r.L[k] == clean[k]) ++same;
+          CHECKM(same < (int)r.L.size() / 2, "preset %d too close to clean", i);
+      }
+      r.p.applyBusPreset(0);
+      r.run(r.inL, r.inR);
+      CHECK(r.identicalToInput() == (int)r.inL.size());
     }
 
-    { std::puts("- sampler MIDI, state round-trip, tempo follow");
-      Rig r; r.p.loadTestLoop(); r.p.setValue(G_MODE, 1); r.p.rebuildNow();
-      r.head.playing = false;
-      r.run(0.6, [](int64_t pos, juce::MidiBuffer& m) {
-          if (pos == 0) m.addEvent(juce::MidiMessage::noteOn(1, 36, (juce::uint8)100), 0);
-      });
-      CHECKM(r.finite() && r.peak() > 0.02f, "sampler peak %f", r.peak());
+    { std::puts("- state round-trip");
+      Rig r;
+      r.p.applyBusPreset(BUS_TAPE);
+      r.p.setValue(G_MODE, 1);
+      r.p.setValue(W_PUNCH, 0.4f);
       juce::MemoryBlock st; r.p.getStateInformation(st);
-      Rig b; b.p.setStateInformation(st.getData(), (int)st.getSize());
-      CHECK(b.p.hasLoop());
-      CHECK(b.p.machine().lanes.size() == r.p.machine().lanes.size());
-      CHECK((int)b.p.machine().events.size() == (int)r.p.machine().events.size());
-      // tempo: 240 BPM should play the loop twice as fast (more of the loop in 1 sec)
-      Rig t1; t1.p.loadTestLoop(); t1.p.rebuildNow();
-      t1.head.playing = true; t1.head.bpm = 120; t1.run(2.0);
-      float p120 = t1.peak();
-      Rig t2; t2.p.loadTestLoop(); t2.p.rebuildNow();
-      t2.head.playing = true; t2.head.bpm = 240; t2.run(1.0);
-      CHECK(t1.finite() && t2.finite() && p120 > 0.05f && t2.peak() > 0.05f);
+      Rig b;
+      b.p.setStateInformation(st.getData(), (int)st.getSize());
+      CHECK(std::abs(b.p.value(W_PUNCH) - 0.4f) < 1e-4f);
+      CHECK((int)std::lround(b.p.value(G_MODE)) == 1);
+      CHECK((int)std::lround(b.p.value(B_BUS)) == BUS_TAPE);
     }
 
-    { std::puts("- editor screenshots and UI interactions");
+    { std::puts("- CPU budget on the plugin path");
+      Rig r(48000, 512);
+      r.p.setValue(G_MODE, 1);
+      r.p.applyBusPreset(BUS_SMASHED);
+      r.p.setValue(W_CRUNCH, 0.5f);
+      for (int i = 0; i < kParts; ++i) { r.p.setValue(pp(i,P_PUNCH), 0.5f); r.p.setValue(pp(i,P_CRUNCH), 0.4f); }
+      r.fillKit(2.0);
+      double t = r.run(r.inL, r.inR);
+      int blocks = ((int)r.inL.size() + 511) / 512;
+      double per = 1000.0 * t / std::max(1, blocks);
+      std::printf("    plugin CPU: %.3f ms / 512 block (realtime 10.667 ms), 2s in %.2f ms\n", per, t * 1000);
+      CHECKM(per < 1.0, "plugin CPU %.3f ms/block", per);
+      CHECK(r.finite() && r.peak() <= dbToGain(-0.1f) + 1e-5f);
+    }
+
+    { std::puts("- editor screenshots");
       Rig r;
       std::unique_ptr<juce::AudioProcessorEditor> ed(r.p.createEditor());
       auto* ce = dynamic_cast<CrumbsEditor*>(ed.get());
       CHECK(ce != nullptr);
       ce->setSize(1080, 700);
       juce::Thread::sleep(30);
-      savePng(*ce, "CRUMBS-ui-1-empty-drop.png");
-      CHECK(ce->showingEmpty());
+      savePng(*ce, "v2-whole-clean.png");
 
-      r.p.loadTestLoop(); r.p.rebuildNow();
-      ce->resized();
-      juce::Thread::sleep(30);
-      savePng(*ce, "CRUMBS-ui-2-loaded-slices.png");
-      CHECK(!ce->showingEmpty());
+      r.p.applyWholePreset(WP_FAT);
+      ce->resized(); juce::Thread::sleep(20);
+      savePng(*ce, "v2-whole-fatbody.png");
 
-      // select hats lane (2) — green orb
-      r.p.machine().setLane(2);
-      ce->resized();
-      juce::Thread::sleep(30);
-      savePng(*ce, "CRUMBS-ui-3-lane-orb.png");
+      r.p.applyWholePreset(WP_CLEAN);
+      r.p.setValue(G_MODE, 1);
+      ce->resized(); juce::Thread::sleep(20);
+      savePng(*ce, "v2-split-orbs.png");
 
-      r.p.setValue(G_BUS, 0); r.p.rebuildNow();
-      ce->resized();
-      juce::Thread::sleep(30);
-      savePng(*ce, "CRUMBS-ui-4-bus-clean.png");
+      r.p.setSelectedPart(0);
+      r.p.setValue(pp(0, P_LISTEN), 1);
+      ce->resized(); juce::Thread::sleep(20);
+      savePng(*ce, "v2-split-listen-kick.png");
 
-      // click Keep in key / add lane / rebuild via public processor
-      r.p.machine().addLane("808");
-      r.p.machine().rebuildLane(0);
-      r.p.pushMachineToParams(); r.p.rebuildNow();
-      ce->resized();
-      juce::Thread::sleep(30);
-      savePng(*ce, "CRUMBS-ui-5-rebuild.png");
-      CHECK(r.p.machine().lanes.size() == 5);
+      r.p.setValue(pp(0, P_LISTEN), 0);
+      r.p.setValue(G_MODE, 0);
+      r.p.applyBusPreset(BUS_SMASHED);
+      ce->resized(); juce::Thread::sleep(20);
+      savePng(*ce, "v2-bus-smashed.png");
       ed.reset();
     }
 

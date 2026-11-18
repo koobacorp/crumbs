@@ -2,587 +2,446 @@
 using namespace cr;
 
 static juce::Colour beige() { return juce::Colour(0xffe6d4b5); }
-static juce::Colour ink() { return juce::Colour(0xff2a2420); }
+static juce::Colour ink()   { return juce::Colour(0xff2a2420); }
 static juce::Colour muted() { return juce::Colour(0xff7a7268); }
-static juce::Colour wash() { return juce::Colour(0xffd4c3a4); }
-static juce::Colour line() { return juce::Colour(0xffc4b399); }
-static juce::Colour palCol(int i) { return juce::Colour(kPalette[(i % 8 + 8) % 8]); }
+static juce::Colour wash()  { return juce::Colour(0xffd4c3a4); }
+static juce::Colour line()  { return juce::Colour(0xffc4b399); }
+static juce::Colour partCol(int i) { return juce::Colour(kPartColour[juce::jlimit(0, kParts - 1, i)]); }
 
-static void drawOrb(juce::Graphics& g, juce::Rectangle<float> r, juce::Colour c, float alpha = 0.55f) {
+static void drawOrb(juce::Graphics& g, juce::Rectangle<float> r, juce::Colour c, float alpha, bool selected) {
     auto cx = r.getCentre();
-    float rad = juce::jmin(r.getWidth(), r.getHeight()) * 0.42f;
-    juce::ColourGradient gr(c.withAlpha(alpha), cx.x, cx.y,
-                            c.withAlpha(0.0f), cx.x + rad, cx.y, true);
+    float rad = juce::jmin(r.getWidth(), r.getHeight()) * (selected ? 0.38f : 0.34f);
+    juce::ColourGradient gr(c.withAlpha(alpha), cx.x, cx.y, c.withAlpha(0.0f), cx.x + rad, cx.y, true);
     g.setGradientFill(gr);
     g.fillEllipse(cx.x - rad, cx.y - rad, rad * 2, rad * 2);
-    // softer outer bloom
-    g.setColour(c.withAlpha(alpha * 0.18f));
-    g.fillEllipse(cx.x - rad * 1.45f, cx.y - rad * 1.45f, rad * 2.9f, rad * 2.9f);
+    g.setColour(c.withAlpha(alpha * 0.20f));
+    g.fillEllipse(cx.x - rad * 1.4f, cx.y - rad * 1.4f, rad * 2.8f, rad * 2.8f);
+    if (selected) {
+        g.setColour(ink().withAlpha(0.85f));
+        g.drawEllipse(cx.x - rad * 1.12f, cx.y - rad * 1.12f, rad * 2.24f, rad * 2.24f, 1.6f);
+    }
 }
 
-static void tiny(juce::Graphics& g, juce::Rectangle<float> r, const juce::String& t, juce::Colour c, juce::Justification j = juce::Justification::centred) {
+static void tiny(juce::Graphics& g, juce::Rectangle<float> r, const juce::String& t, juce::Colour c,
+                 juce::Justification j = juce::Justification::centred) {
     g.setColour(c);
-    g.setFont(juce::Font(juce::FontOptions(10.0f)).withExtraKerningFactor(0.12f));
+    g.setFont(juce::Font(juce::FontOptions(10.0f)).withExtraKerningFactor(0.10f));
     g.drawText(t.toUpperCase(), r, j, false);
 }
-
 static void valueFont(juce::Graphics& g, juce::Rectangle<float> r, const juce::String& t, juce::Colour c) {
     g.setColour(c);
     g.setFont(juce::Font(juce::FontOptions(15.0f, juce::Font::bold)));
     g.drawText(t, r, juce::Justification::centred, false);
+}
+static void chip(juce::Graphics& g, juce::Rectangle<float> r, const juce::String& t, bool on) {
+    g.setColour(on ? ink() : wash());
+    g.fillRoundedRectangle(r, 4.f);
+    g.setColour(on ? beige() : ink());
+    g.setFont(juce::Font(juce::FontOptions(11.0f, juce::Font::bold)));
+    g.drawText(t, r, juce::Justification::centred, false);
+}
+static void knob(juce::Graphics& g, juce::Rectangle<float> r, const juce::String& label, const juce::String& val, juce::Colour accent) {
+    // Compact: value then label, so a tall cell does not float the caption mid-window.
+    auto box = r.withHeight(juce::jmin(r.getHeight(), 88.f));
+    auto v = box.removeFromTop(36);
+    auto lab = box.removeFromTop(16);
+    valueFont(g, v, val, accent);
+    tiny(g, lab, label, muted());
+}
+static juce::String fmt01(float x) { return juce::String(x, 2); }
+static juce::String fmtSigned(float x) {
+    if (std::abs(x) < 0.005f) return "0.00";
+    return (x > 0 ? "+" : "") + juce::String(x, 2);
+}
+static juce::String fmtHz(float x) {
+    if (x >= 1000.f) return juce::String(x / 1000.f, 1) + " kHz";
+    return juce::String((int)std::lround(x)) + " Hz";
+}
+static juce::String fmtDb(float x) {
+    if (std::abs(x) < 0.05f) return "0.0 dB";
+    return juce::String(x, 1) + " dB";
 }
 
 CrumbsEditor::CrumbsEditor(CrumbsProcessor& p)
     : AudioProcessorEditor(p), proc(p) {
     setOpaque(true);
     setResizable(true, false);
-    setResizeLimits(860, 560, 1800, 1200);
+    setResizeLimits(900, 600, 1800, 1200);
     setSize(1080, 700);
     startTimerHz(24);
 }
 
 CrumbsEditor::~CrumbsEditor() { stopTimer(); }
 
-void CrumbsEditor::layout() {
-    auto b = getLocalBounds().toFloat().reduced(18, 18);
-    topBar = b.removeFromTop(30);
-    b.removeFromTop(10);
-    hintRow = b.removeFromTop(14);
-    b.removeFromTop(4);
-    timeline = b.removeFromTop(88); // slice strip only; hint sits above it
-    b.removeFromTop(12);
-    laneBar = b.removeFromTop(38);
-    b.removeFromTop(10);
-    busRow = b.removeFromBottom(150);
-    b.removeFromBottom(10);
-    fineRow = b.removeFromBottom(112);
-    b.removeFromBottom(8);
-    orbArea = b;
-
-    auto t = topBar;
-    btnKeep = t.removeFromRight(100);
-    t.removeFromRight(8);
-    snapBox = t.removeFromRight(88);
-    t.removeFromRight(6);
-    scaleBox = t.removeFromRight(96);
-    t.removeFromRight(6);
-    keyBox = t.removeFromRight(70);
-    t.removeFromRight(16);
-    btnRedo = t.removeFromRight(56);
-    t.removeFromRight(4);
-    btnUndo = t.removeFromRight(56);
-    t.removeFromRight(8);
-    btnAB = t.removeFromRight(50);
-
-    auto lb = laneBar;
-    modeSamp = lb.removeFromRight(78);
-    lb.removeFromRight(6);
-    modeLoop = lb.removeFromRight(70);
-    lb.removeFromRight(8);
-    btnPlay = lb.removeFromRight(64);
-    lb.removeFromRight(14);
-    btnDragM = lb.removeFromRight(76);
-    lb.removeFromRight(4);
-    btnDragA = lb.removeFromRight(76);
-    lb.removeFromRight(4);
-    btnSaveM = lb.removeFromRight(72);
-    lb.removeFromRight(4);
-    btnSaveA = lb.removeFromRight(76);
-    lb.removeFromRight(16); // keep the + clear of the Save Audio cluster
-    btnAdd = lb.removeFromRight(44);
-    lb.removeFromRight(12);
-    // remaining width: lane chips
-    laneChips.clear();
-    int nL = (int)proc.machine().lanes.size();
-    float gap = 6.f;
-    float cw = nL > 0 ? (lb.getWidth() - gap * (nL - 1)) / juce::jmax(1, nL) : 80;
-    for (int i = 0; i < nL; ++i) {
-        laneChips.push_back(lb.removeFromLeft(cw));
-        if (i + 1 < nL) lb.removeFromLeft(gap);
-    }
-
-    // rebuild + fine knobs depend on selected lane / rebuilt
-    knobs.clear();
-    int sel = juce::jlimit(0, juce::jmax(0, (int)proc.machine().lanes.size() - 1), proc.machine().selectedLane);
-    bool reb = sel < (int)proc.machine().lanes.size() && proc.machine().lanes[(size_t)sel].rebuilt;
-    int kind = sel < (int)proc.machine().lanes.size() ? proc.machine().lanes[(size_t)sel].kind : 0;
-    std::vector<std::pair<juce::String, int>> big, fine;
-    if (reb) {
-        if (kind == LANE_KICK) {
-            big = {{"Punch", lp(sel, LP_KPUNCH)}, {"Boom", lp(sel, LP_KBOOM)}, {"Tune", lp(sel, LP_KTUNE)}, {"Crunch", lp(sel, LP_KCRUNCH)}};
-        } else if (kind == LANE_SNARE) {
-            big = {{"Body", lp(sel, LP_KBODY)}, {"Snap", lp(sel, LP_KSNAP)}, {"Tune", lp(sel, LP_KTUNE)}, {"Crunch", lp(sel, LP_KCRUNCH)}};
-        } else if (kind == LANE_HATS) {
-            big = {{"Tone", lp(sel, LP_TONE)}, {"Length", lp(sel, LP_KLENGTH)}, {"Shimmer", lp(sel, LP_KSHIMMER)}, {"Crunch", lp(sel, LP_KCRUNCH)}};
-        } else {
-            big = {{"Body", lp(sel, LP_KBODY)}, {"Tune", lp(sel, LP_KTUNE)}, {"Length", lp(sel, LP_KLENGTH)}, {"Crunch", lp(sel, LP_KCRUNCH)}};
-        }
-        big.push_back({"Blend", lp(sel, LP_BLEND)});
-    } else {
-        // before rebuild, still show the everyday lane knobs large-ish in the orb area
-        big = {{"Level", lp(sel, LP_LEVEL)}, {"Pitch", lp(sel, LP_PITCH)}, {"Decay", lp(sel, LP_DECAY)}, {"Crunch", lp(sel, LP_CRUNCH)}};
-    }
-    fine = {{"Level", lp(sel, LP_LEVEL)}, {"Pitch", lp(sel, LP_PITCH)}, {"Decay", lp(sel, LP_DECAY)},
-            {"Tone", lp(sel, LP_TONE)}, {"Crunch", lp(sel, LP_CRUNCH)}, {"Pan", lp(sel, LP_PAN)},
-            {"Room", lp(sel, LP_ROOM)}, {"Swing", lp(sel, LP_SWING)}, {"Humanize", lp(sel, LP_HUMAN)},
-            {"Ghosts", lp(sel, LP_GHOSTS)}};
-    auto place = [&](std::vector<std::pair<juce::String,int>>& src, juce::Rectangle<float> area, bool rebuildSet) {
-        int n = (int)src.size(); if (n == 0) return;
-        float w = area.getWidth() / n;
-        for (int i = 0; i < n; ++i) {
-            auto r = area.withX(area.getX() + i * w).withWidth(w).reduced(8, 4);
-            knobs.push_back({src[(size_t)i].first, src[(size_t)i].second, r, rebuildSet});
-        }
-    };
-    auto mid = orbArea;
-    btnRebuild = mid.removeFromTop(26).removeFromLeft(100);
-    mid.removeFromTop(4);
-    // palette + split/merge/rename on the right of rebuild row
-    auto tools = orbArea.withHeight(26).withX(btnRebuild.getRight() + 8);
-    btnSplit = tools.removeFromLeft(70); tools.removeFromLeft(6);
-    btnMerge = tools.removeFromLeft(70); tools.removeFromLeft(6);
-    btnRename = tools.removeFromLeft(78);
-    palSwatches.clear();
-    tools.removeFromLeft(12);
-    for (int i = 0; i < 8; ++i) { palSwatches.push_back(tools.removeFromLeft(16).withHeight(16).translated(0, 5)); tools.removeFromLeft(4); }
-
-    place(big, mid, reb);
-    place(fine, fineRow, false);
-
-    auto br = busRow;
-    busLabel = br.removeFromTop(16);
-    br.removeFromTop(4);
-    auto presets = br.removeFromTop(26);
-    busBtns.clear();
-    float bw = presets.getWidth() / 5.f;
-    for (int i = 0; i < 5; ++i) busBtns.push_back(presets.removeFromLeft(bw).reduced(3, 2));
-    br.removeFromTop(6);
-    auto ctrls = br; // room for caption + dial + value
-    std::vector<std::pair<juce::String,int>> busK = {{"Punch", G_PUNCH},{"Crunch", G_CRUNCH},{"Squash", G_SQUASH},{"Pump", G_PUMP},{"Room", G_BROOM}};
-    float cw2 = ctrls.getWidth() / 6.f;
-    for (int i = 0; i < 5; ++i) {
-        auto r = ctrls.removeFromLeft(cw2).reduced(8, 2);
-        knobs.push_back({busK[(size_t)i].first, busK[(size_t)i].second, r, false});
-    }
-    auto typ = ctrls;
-    crunchTypes.clear();
-    // stack the four crunch types in a 2x2 so they stay readable beside the knobs
-    auto typTop = typ.removeFromTop(typ.getHeight() * 0.5f);
-    for (int i = 0; i < 2; ++i) crunchTypes.push_back(typTop.removeFromLeft(typTop.getWidth() / (2 - i)).reduced(3, 4));
-    for (int i = 0; i < 2; ++i) crunchTypes.push_back(typ.removeFromLeft(typ.getWidth() / (2 - i)).reduced(3, 4));
-}
-
 void CrumbsEditor::resized() { layout(); }
 
-void CrumbsEditor::timerCallback() { repaint(); }
+void CrumbsEditor::layout() {
+    auto b = getLocalBounds().toFloat().reduced(20, 18);
+    topBar = b.removeFromTop(34);
+    b.removeFromTop(8);
+    hintRow = b.removeFromTop(16);
+    b.removeFromTop(8);
+    busRow = b.removeFromBottom(172);
+    b.removeFromBottom(10);
+    mixRow = b.removeFromBottom(86);
+    b.removeFromBottom(10);
+    workArea = b;
+
+    auto t = topBar;
+    auto title = t.removeFromLeft(130);
+    (void)title;
+    t.removeFromLeft(16);
+    modeWhole = t.removeFromLeft(78);
+    t.removeFromLeft(4);
+    modeSplit = t.removeFromLeft(78);
+    t.removeFromLeft(14);
+    btnAB = t.removeFromLeft(64);
+    t.removeFromLeft(10);
+    lookBox = t.removeFromLeft(110);
+    t.removeFromLeft(10);
+    latBox = t.removeFromLeft(90);
+    t.removeFromRight(8);
+    ceilLight = t.removeFromRight(18);
+    t.removeFromRight(8);
+    outMeter = t.removeFromRight(90);
+    t.removeFromRight(8);
+    inMeter = t.removeFromRight(90);
+
+    // work: orbs on the left in Split, knobs fill the rest (or all of it in Whole)
+    auto w = workArea;
+    bool split = proc.value(G_MODE) >= 0.5f;
+    orbs.clear();
+    if (split) {
+        orbArea = w.removeFromLeft(juce::jmax(280.f, w.getWidth() * 0.38f));
+        w.removeFromLeft(16);
+        auto o = orbArea;
+        splitRow = o.removeFromBottom(44);
+        o.removeFromBottom(8);
+        float gap = 12.f;
+        float ow = (o.getWidth() - gap) * 0.5f;
+        float oh = (o.getHeight() - gap) * 0.5f;
+        auto top = o.removeFromTop(oh);
+        orbs.push_back(top.removeFromLeft(ow).reduced(4, 2));
+        top.removeFromLeft(gap);
+        orbs.push_back(top.reduced(4, 2));
+        o.removeFromTop(gap);
+        orbs.push_back(o.removeFromLeft(ow).reduced(4, 2));
+        o.removeFromLeft(gap);
+        orbs.push_back(o.reduced(4, 2));
+        auto s = splitRow;
+        lowSplitBox = s.removeFromLeft(s.getWidth() * 0.5f - 4);
+        s.removeFromLeft(8);
+        highSplitBox = s;
+        knobArea = w;
+        auto k = knobArea;
+        auto flags = k.removeFromTop(28);
+        listenBtn = flags.removeFromLeft(80);
+        flags.removeFromLeft(8);
+        muteBtn = flags.removeFromLeft(80);
+        k.removeFromTop(14);
+        auto knobRow = k.removeFromTop(88);
+        partKnobs.clear();
+        const int nk = 8;
+        float gw = 6.f;
+        float cw = (knobRow.getWidth() - gw * (nk - 1)) / nk;
+        for (int i = 0; i < nk; ++i) {
+            partKnobs.push_back(knobRow.removeFromLeft(cw));
+            if (i + 1 < nk) knobRow.removeFromLeft(gw);
+        }
+        wholeKnobs.clear();
+        wholePresets.clear();
+    } else {
+        orbArea = {};
+        knobArea = w;
+        auto k = knobArea;
+        auto pre = k.removeFromTop(30);
+        wholePresets.clear();
+        const int np = 5;
+        float gw = 8.f;
+        float cw = (pre.getWidth() - gw * (np - 1)) / np;
+        for (int i = 0; i < np; ++i) {
+            wholePresets.push_back(pre.removeFromLeft(cw));
+            if (i + 1 < np) pre.removeFromLeft(gw);
+        }
+        k.removeFromTop(18);
+        auto knobRow = k.removeFromTop(88);
+        wholeKnobs.clear();
+        const int nk = 8;
+        float gap = 8.f;
+        float kw = (knobRow.getWidth() - gap * (nk - 1)) / nk;
+        for (int i = 0; i < nk; ++i) {
+            wholeKnobs.push_back(knobRow.removeFromLeft(kw));
+            if (i + 1 < nk) knobRow.removeFromLeft(gap);
+        }
+        partKnobs.clear();
+        lowSplitBox = {}; highSplitBox = {};
+        listenBtn = {}; muteBtn = {};
+    }
+
+    // mix row: crunch type + mix/output/ceiling
+    auto m = mixRow;
+    crunchTypes.clear();
+    auto ctypes = m.removeFromLeft(260);
+    {
+        juce::Rectangle<float> ct = ctypes;
+        ct.removeFromTop(14);
+        float gw = 6.f;
+        float cw = (ct.getWidth() - gw * 3) / 4;
+        for (int i = 0; i < 4; ++i) {
+            crunchTypes.push_back(ct.removeFromLeft(cw));
+            if (i < 3) ct.removeFromLeft(gw);
+        }
+    }
+    m.removeFromLeft(20);
+    float gw = 12.f;
+    float mw = (m.getWidth() - gw * 2) / 3;
+    mixBox = m.removeFromLeft(mw); m.removeFromLeft(gw);
+    outBox = m.removeFromLeft(mw); m.removeFromLeft(gw);
+    ceilBox = m;
+
+    // bus row — header sits inside the row so it cannot overlap crunch chips
+    auto br = busRow;
+    br.removeFromTop(16); // room for the "Drum bus" caption drawn in paint
+    br.removeFromTop(2);
+    auto chips = br.removeFromTop(30);
+    busChips.clear();
+    const int nb = 5;
+    float cg = 8.f;
+    float cw = (chips.getWidth() - cg * (nb - 1)) / nb;
+    for (int i = 0; i < nb; ++i) {
+        busChips.push_back(chips.removeFromLeft(cw));
+        if (i + 1 < nb) chips.removeFromLeft(cg);
+    }
+    br.removeFromTop(8);
+    auto types = br.removeFromTop(24);
+    busCrunchTypes.clear();
+    types.removeFromLeft(4);
+    for (int i = 0; i < 4; ++i) {
+        busCrunchTypes.push_back(types.removeFromLeft(70));
+        types.removeFromLeft(6);
+    }
+    br.removeFromTop(6);
+    busKnobs.clear();
+    const int bk = 5;
+    float bg = 8.f;
+    float bw = (br.getWidth() - bg * (bk - 1)) / bk;
+    for (int i = 0; i < bk; ++i) {
+        busKnobs.push_back(br.removeFromLeft(bw));
+        if (i + 1 < bk) br.removeFromLeft(bg);
+    }
+}
 
 void CrumbsEditor::paint(juce::Graphics& g) {
     layout();
     g.fillAll(beige());
-    auto& m = proc.machine();
-    int sel = juce::jlimit(0, juce::jmax(0, (int)m.lanes.size() - 1), m.selectedLane);
-    juce::Colour laneC = m.lanes.empty() ? muted() : palCol(m.lanes[(size_t)sel].colour);
+    const bool split = proc.value(G_MODE) >= 0.5f;
+    const bool ab = proc.value(G_AB) >= 0.5f;
+    const bool look = proc.value(G_LOOKAHEAD) >= 0.5f;
+    const int sel = proc.selectedPart();
 
-    // corner catalogue type — top-left and bottom-right, clear of the top controls
-    tiny(g, juce::Rectangle<float>(18, 4, 140, 12), "CRUMBS", muted(), juce::Justification::centredLeft);
-    tiny(g, juce::Rectangle<float>((float)getWidth() - 168, (float)getHeight() - 16, 150, 12),
-         "V1.0  KOOBACORP", muted(), juce::Justification::centredRight);
+    // Title
+    g.setColour(ink());
+    g.setFont(juce::Font(juce::FontOptions(22.0f, juce::Font::bold)).withExtraKerningFactor(0.14f));
+    g.drawText("CRUMBS", topBar.withWidth(130), juce::Justification::centredLeft, false);
 
-    // top controls
-    auto drawBtn = [&](juce::Rectangle<float> r, const juce::String& t, bool on, bool hi = false) {
-        g.setColour(on ? ink() : wash());
-        g.fillRoundedRectangle(r, 3.f);
-        g.setColour(on ? beige() : (hi ? ink() : muted()));
-        g.setFont(juce::Font(juce::FontOptions(11.0f, juce::Font::bold)));
-        g.drawText(t.toUpperCase(), r, juce::Justification::centred, false);
+    chip(g, modeWhole, "Whole", !split);
+    chip(g, modeSplit, "Split", split);
+    chip(g, btnAB, ab ? "A/B ON" : "A/B", ab);
+    chip(g, lookBox, look ? "Lookahead on" : "Lookahead off", look);
+
+    int lat = proc.reportedLatency();
+    double srate = std::max(1.0, proc.getSampleRate());
+    juce::String latS = (lat <= 0) ? "0 ms" : juce::String(1000.0 * lat / srate, 2) + " ms";
+    tiny(g, juce::Rectangle<float>(latBox.getX(), topBar.getY(), latBox.getWidth(), 12), "Latency", muted(), juce::Justification::centredLeft);
+    g.setColour(ink());
+    g.setFont(juce::Font(juce::FontOptions(13.0f, juce::Font::bold)));
+    g.drawText(latS, juce::Rectangle<float>(latBox.getX(), topBar.getY() + 12, latBox.getWidth(), 20),
+               juce::Justification::centredLeft, false);
+
+    auto meter = [&](juce::Rectangle<float> r, const juce::String& name, float pk) {
+        tiny(g, r.removeFromTop(12), name, muted());
+        g.setColour(wash());
+        g.fillRoundedRectangle(r.reduced(0, 4), 3.f);
+        float db = pk > 1e-8f ? gainToDb(pk) : -60.f;
+        float t = juce::jlimit(0.f, 1.f, (db + 60.f) / 60.f);
+        auto fill = r.reduced(0, 4).withWidth(std::max(2.f, r.getWidth() * t));
+        g.setColour(pk >= dbToGain(proc.value(G_CEILING)) * 0.995f ? juce::Colour(0xffc4362a) : ink());
+        g.fillRoundedRectangle(fill, 3.f);
     };
-    auto drawBox = [&](juce::Rectangle<float> r, const juce::String& cap, const juce::String& val) {
-        tiny(g, r.removeFromTop(11), cap, muted());
-        g.setColour(ink());
-        g.setFont(juce::Font(juce::FontOptions(13.0f, juce::Font::bold)));
-        g.drawText(val, r, juce::Justification::centred, false);
-    };
-    const char* keys[] = {"C","C#","D","D#","E","F","F#","G","G#","A","A#","B"};
-    const char* scales[] = {"Major","Minor","Chromatic","Maj Pent","Min Pent"};
-    const char* snaps[] = {"Nearest","Root"};
-    drawBox(keyBox, "Key", keys[juce::jlimit(0, 11, m.keyPc)]);
-    drawBox(scaleBox, "Scale", scales[juce::jlimit(0, 4, m.scale)]);
-    drawBox(snapBox, "Snap", snaps[m.snapToRoot ? 1 : 0]);
-    drawBtn(btnKeep, "Keep in key", m.keepInKey, true);
-    drawBtn(btnAB, "A/B", m.abOriginal, true);
-    drawBtn(btnUndo, "Undo", false, m.canUndo());
-    drawBtn(btnRedo, "Redo", false, m.canRedo());
+    meter(inMeter, "In", proc.inPeak());
+    meter(outMeter, "Out", proc.outPeak());
+    g.setColour(proc.ceilingHold() > 0.2f ? juce::Colour(0xffc4362a) : line());
+    g.fillEllipse(ceilLight.reduced(2));
 
-    // note readout (only once a loop is loaded)
-    if (proc.hasLoop() && !m.lanes.empty()) {
-        float hz = m.laneDisplayHz(sel);
-        auto nc = noteCentsFromHz(hz);
-        juce::String note = formatNoteCents(nc);
-        if (m.lanes[(size_t)sel].kind == LANE_HATS || !nc.valid)
-            note = "NO PITCH";
-        g.setColour(ink());
-        g.setFont(juce::Font(juce::FontOptions(18.0f, juce::Font::bold)));
-        auto nr = topBar.withWidth(220).translated(80, 0);
-        g.drawText(note, nr, juce::Justification::centredLeft, false);
-        tiny(g, nr.translated(0, 1).removeFromRight(90), "CONCERT PITCH", muted(), juce::Justification::centredRight);
-    }
+    juce::String hint = split
+        ? "Split is a frequency split, not a stem separator. Parts will bleed. Use Listen to hear what each orb catches."
+        : "Put this on a drum mixer track. Whole shapes the kit as one sound. Clean on the bus is a true bypass.";
+    tiny(g, hintRow, hint, muted(), juce::Justification::centredLeft);
 
-    // empty state
-    if (m.original.n() <= 0) {
-        drawOrb(g, getLocalBounds().toFloat(), juce::Colour(0xffcbb892), 0.45f);
-        tiny(g, juce::Rectangle<float>(0, (float)getHeight() * 0.62f, (float)getWidth(), 20),
-             "Drop a loop", muted());
-        return;
-    }
-
-    // timeline
-    g.setColour(wash());
-    g.fillRoundedRectangle(timeline, 6.f);
-    int N = juce::jmax(1, m.arrangedSamples);
-    for (int i = 0; i < (int)m.events.size(); ++i) {
-        auto& e = m.events[(size_t)i];
-        if (e.lane < 0 || e.lane >= (int)m.lanes.size()) continue;
-        float x0 = timeline.getX() + timeline.getWidth() * e.destStart / (float)N;
-        int len = juce::jmax(e.srcEnd - e.srcStart, (int)(0.03 * (m.original.sr > 0 ? m.original.sr : 44100)));
-        float x1 = timeline.getX() + timeline.getWidth() * (e.destStart + len) / (float)N;
-        auto r = juce::Rectangle<float>(x0, timeline.getY() + 8, juce::jmax(4.f, x1 - x0), timeline.getHeight() - 16);
-        auto c = palCol(m.lanes[(size_t)e.lane].colour);
-        if (i == m.selectedEvent) {
-            g.setColour(c.withAlpha(0.28f));
-            g.fillRoundedRectangle(r.expanded(3, 4), 4.f);
+    if (split) {
+        const char* names[] = {"Kick", "Snare", "Hats", "Perc"};
+        for (int i = 0; i < kParts && i < (int)orbs.size(); ++i) {
+            bool on = (i == sel);
+            bool mutedP = proc.value(pp(i, P_MUTE)) >= 0.5f;
+            bool lis = proc.value(pp(i, P_LISTEN)) >= 0.5f;
+            auto cell = orbs[(size_t)i];
+            auto lab = cell.removeFromBottom(18);
+            drawOrb(g, cell, partCol(i), mutedP ? 0.22f : (on ? 0.70f : 0.48f), on);
+            juce::String tag = names[i];
+            if (lis) tag += "  listen";
+            if (mutedP) tag += "  mute";
+            tiny(g, lab, tag, on ? ink() : muted());
         }
-        g.setColour(c);
-        g.fillRoundedRectangle(r, 3.f);
-        if (i == m.selectedEvent) {
-            g.setColour(ink());
-            g.drawRoundedRectangle(r, 3.f, 1.4f);
+        knob(g, lowSplitBox, "Low split", fmtHz(proc.value(S_LOW)), ink());
+        knob(g, highSplitBox, "High split", fmtHz(proc.value(S_HIGH)), ink());
+        chip(g, listenBtn, proc.value(pp(sel, P_LISTEN)) >= 0.5f ? "Listening" : "Listen",
+             proc.value(pp(sel, P_LISTEN)) >= 0.5f);
+        chip(g, muteBtn, proc.value(pp(sel, P_MUTE)) >= 0.5f ? "Muted" : "Mute",
+             proc.value(pp(sel, P_MUTE)) >= 0.5f);
+
+        const int ids[] = { pp(sel,P_LEVEL), pp(sel,P_PUNCH), pp(sel,P_BODY), pp(sel,P_DECAY),
+                            pp(sel,P_CRUNCH), pp(sel,P_PAN), pp(sel,P_WIDTH), pp(sel,P_SENS) };
+        const char* labs[] = {"Level","Punch","Body","Decay","Crunch","Pan","Width","Sensitivity"};
+        for (int i = 0; i < 8 && i < (int)partKnobs.size(); ++i) {
+            float v = proc.value(ids[i]);
+            juce::String s = (i == 2 || i == 5) ? fmtSigned(v) : fmt01(v);
+            knob(g, partKnobs[(size_t)i], labs[i], s, partCol(sel));
         }
-    }
-    {
-        // Middle dot via UTF-8 so it cannot be read as Latin-1 ("Â·").
-        const juce::String hint (juce::CharPointer_UTF8 (
-            "Arrange  \xc2\xb7  drag to move  \xc2\xb7  double-click to delete"));
-        tiny(g, hintRow, hint, muted(), juce::Justification::centredLeft);
-    }
-
-    // lane chips
-    for (int i = 0; i < (int)laneChips.size(); ++i) {
-        auto r = laneChips[(size_t)i];
-        auto c = palCol(m.lanes[(size_t)i].colour);
-        bool on = (i == sel);
-        g.setColour(on ? c : c.withAlpha(0.22f));
-        g.fillRoundedRectangle(r, 4.f);
-        g.setColour(on ? juce::Colours::white : ink());
-        g.setFont(juce::Font(juce::FontOptions(12.0f, juce::Font::bold)));
-        g.drawText(juce::String(m.lanes[(size_t)i].name).toUpperCase(), r, juce::Justification::centred, true);
-    }
-    drawBtn(btnAdd, "+", false, (int)m.lanes.size() < 8);
-    drawBtn(btnSaveA, "Save audio", false, true);
-    drawBtn(btnSaveM, "Save MIDI", false, true);
-    drawBtn(btnDragA, "Drag audio", false, true);
-    drawBtn(btnDragM, "Drag MIDI", false, true);
-    drawBtn(btnPlay, proc.isPreview() ? "Stop" : "Play", proc.isPreview(), true);
-    drawBtn(modeLoop, "Loop", m.playMode == PLAY_LOOP, true);
-    drawBtn(modeSamp, "Sampler", m.playMode == PLAY_SAMPLER, true);
-
-    // orb behind knobs
-    drawOrb(g, orbArea, laneC, 0.55f);
-    drawBtn(btnRebuild, m.lanes[(size_t)sel].rebuilt ? "Rebuilt" : "Rebuild", m.lanes[(size_t)sel].rebuilt, true);
-    drawBtn(btnSplit, "Split", false, (int)m.lanes.size() < 8);
-    drawBtn(btnMerge, "Merge", false, (int)m.lanes.size() > 1);
-    drawBtn(btnRename, "Rename", false, true);
-    for (int i = 0; i < (int)palSwatches.size(); ++i) {
-        g.setColour(palCol(i));
-        g.fillEllipse(palSwatches[(size_t)i]);
-        if (m.lanes[(size_t)sel].colour == i) {
-            g.setColour(ink());
-            g.drawEllipse(palSwatches[(size_t)i].expanded(2, 2), 1.4f);
+    } else {
+        for (int i = 0; i < (int)wholePresets.size(); ++i)
+            chip(g, wholePresets[(size_t)i], wholePresetName(i), (int)std::lround(proc.value(W_PRESET)) == i);
+        const int ids[] = { W_PUNCH, W_BODY, W_SNAP, W_CRUNCH, W_TONE, W_GLUE, W_ROOM, W_WIDTH };
+        const char* labs[] = {"Punch","Body","Snap","Crunch","Tone","Glue","Room","Width"};
+        for (int i = 0; i < 8 && i < (int)wholeKnobs.size(); ++i) {
+            float v = proc.value(ids[i]);
+            juce::String s = (i == 1 || i == 4) ? fmtSigned(v) : fmt01(v);
+            knob(g, wholeKnobs[(size_t)i], labs[i], s, ink());
         }
     }
 
-    auto drawKnob = [&](const KnobInfo& k) {
-        auto r = k.r;
-        auto cap = r.removeFromTop(14);
-        tiny(g, cap, k.label, muted());
-        auto valR = r.removeFromBottom(16);
-        auto* prm = proc.param(k.param);
-        float nrm = prm ? prm->getValue() : 0;
-        float real = prm ? prm->convertFrom0to1(nrm) : 0;
-        juce::String vs = prm ? prm->getCurrentValueAsText() : "-";
-        // compact numeric
-        if (k.param == lp(sel, LP_PITCH) || k.param == lp(sel, LP_KTUNE) || k.param == G_CRTYPE) {}
-        valueFont(g, valR, vs, ink());
-        float rad = juce::jmin(r.getWidth(), r.getHeight()) * 0.42f;
-        rad = juce::jmin(rad, juce::jmin(r.getWidth(), r.getHeight()) * 0.5f - 2.f);
-        rad = juce::jmax(rad, 14.f);
-        auto cx = r.getCentre();
-        float sw = juce::jlimit(1.6f, 2.6f, rad * 0.09f);
-        g.setColour(line());
-        g.drawEllipse(cx.x - rad, cx.y - rad, rad * 2, rad * 2, sw);
-        float a0 = juce::MathConstants<float>::pi * 0.75f;
-        float a1 = juce::MathConstants<float>::pi * 2.25f;
-        float a = a0 + nrm * (a1 - a0);
-        juce::Path arc;
-        arc.addCentredArc(cx.x, cx.y, rad, rad, 0, a0, a, true);
-        g.setColour(k.rebuild ? laneC : ink());
-        g.strokePath(arc, juce::PathStrokeType(sw + 0.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-        g.setColour(ink());
-        g.drawLine(cx.x, cx.y, cx.x + rad * 0.78f * std::cos(a), cx.y + rad * 0.78f * std::sin(a), sw);
-    };
-    // only fine + big + bus knobs already in knobs[]
-    for (auto& k : knobs) drawKnob(k);
+    tiny(g, juce::Rectangle<float>(crunchTypes.empty() ? 0 : crunchTypes[0].getX(),
+                                   mixRow.getY(), 200, 14), "Crunch character", muted(), juce::Justification::centredLeft);
+    const char* cts[] = {"Tape","Tube","Clip","Fuzz"};
+    int ct = (int)std::lround(proc.value(W_CRTYPE));
+    for (int i = 0; i < (int)crunchTypes.size(); ++i)
+        chip(g, crunchTypes[(size_t)i], cts[i], i == ct);
+
+    knob(g, mixBox, "Mix", juce::String((int)std::lround(proc.value(G_MIX) * 100)) + " %", ink());
+    knob(g, outBox, "Output", fmtDb(proc.value(G_OUTPUT)), ink());
+    knob(g, ceilBox, "Ceiling", fmtDb(proc.value(G_CEILING)), ink());
 
     // bus
-    tiny(g, busLabel, "Drum bus", muted(), juce::Justification::centredLeft);
-    for (int i = 0; i < (int)busBtns.size(); ++i) {
-        bool on = (m.bus.preset == i);
-        g.setColour(on ? ink() : wash());
-        g.fillRoundedRectangle(busBtns[(size_t)i], 3.f);
-        g.setColour(on ? beige() : ink());
-        g.setFont(juce::Font(juce::FontOptions(11.0f, on ? juce::Font::bold : juce::Font::plain)));
-        g.drawText(juce::String(busPresetName(i)).toUpperCase(), busBtns[(size_t)i], juce::Justification::centred, true);
-    }
-    const char* cts[] = {"Tape","Tube","Clip","Fuzz"};
-    for (int i = 0; i < (int)crunchTypes.size(); ++i) {
-        bool on = (m.bus.crunchType == i);
-        g.setColour(on ? ink().withAlpha(0.85f) : wash());
-        g.fillRoundedRectangle(crunchTypes[(size_t)i], 3.f);
-        tiny(g, crunchTypes[(size_t)i], cts[i], on ? beige() : muted());
-    }
+    tiny(g, juce::Rectangle<float>(busRow.getX(), busRow.getY(), 200, 14), "Drum bus", muted(), juce::Justification::centredLeft);
+    int bp = (int)std::lround(proc.value(B_BUS));
+    for (int i = 0; i < (int)busChips.size(); ++i)
+        chip(g, busChips[(size_t)i], busPresetName(i), i == bp);
+    int bct = (int)std::lround(proc.value(B_CRTYPE));
+    for (int i = 0; i < (int)busCrunchTypes.size(); ++i)
+        chip(g, busCrunchTypes[(size_t)i], cts[i], i == bct);
+    const int bids[] = { B_PUNCH, B_CRUNCH, B_SQUASH, B_PUMP, B_ROOM };
+    const char* blabs[] = {"Punch","Crunch","Squash","Pump","Room"};
+    for (int i = 0; i < 5 && i < (int)busKnobs.size(); ++i)
+        knob(g, busKnobs[(size_t)i], blabs[i], fmt01(proc.value(bids[i])), ink());
+}
 
-    if (toast.isNotEmpty() && juce::Time::getMillisecondCounter() < toastUntil) {
-        auto tr = juce::Rectangle<float>((float)getWidth() * 0.5f - 180, (float)getHeight() - 36, 360, 22);
-        g.setColour(ink().withAlpha(0.85f));
-        g.fillRoundedRectangle(tr, 3.f);
-        tiny(g, tr, toast, beige());
+void CrumbsEditor::timerCallback() { repaint(); }
+
+void CrumbsEditor::dragKnob(int param, float startVal, float dy, float sensitivity) {
+    if (auto* prm = proc.param(param)) {
+        float rng = prm->getNormalisableRange().end - prm->getNormalisableRange().start;
+        float v = startVal - dy * (rng / sensitivity);
+        v = prm->getNormalisableRange().snapToLegalValue(v);
+        prm->setValueNotifyingHost(prm->convertTo0to1(v));
     }
 }
 
-CrumbsEditor::Hit CrumbsEditor::hitTest(juce::Point<float> p) const {
-    Hit h;
-    auto inside = [&](juce::Rectangle<float> r) { return r.contains(p); };
-    if (inside(btnAB)) { h.kind = Hit::Button; h.index = 1; return h; }
-    if (inside(btnUndo)) { h.kind = Hit::Button; h.index = 2; return h; }
-    if (inside(btnRedo)) { h.kind = Hit::Button; h.index = 3; return h; }
-    if (inside(btnKeep)) { h.kind = Hit::Button; h.index = 4; return h; }
-    if (inside(btnPlay)) { h.kind = Hit::Button; h.index = 5; return h; }
-    if (inside(btnRebuild)) { h.kind = Hit::Button; h.index = 6; return h; }
-    if (inside(btnAdd)) { h.kind = Hit::Button; h.index = 7; return h; }
-    if (inside(btnSplit)) { h.kind = Hit::Button; h.index = 8; return h; }
-    if (inside(btnMerge)) { h.kind = Hit::Button; h.index = 9; return h; }
-    if (inside(btnSaveA)) { h.kind = Hit::Button; h.index = 10; return h; }
-    if (inside(btnSaveM)) { h.kind = Hit::Button; h.index = 11; return h; }
-    if (inside(btnDragA)) { h.kind = Hit::Button; h.index = 12; return h; }
-    if (inside(btnDragM)) { h.kind = Hit::Button; h.index = 13; return h; }
-    if (inside(btnRename)) { h.kind = Hit::Button; h.index = 14; return h; }
-    if (inside(modeLoop)) { h.kind = Hit::Mode; h.index = 0; return h; }
-    if (inside(modeSamp)) { h.kind = Hit::Mode; h.index = 1; return h; }
-    if (inside(keyBox)) { h.kind = Hit::Button; h.index = 20; return h; }
-    if (inside(scaleBox)) { h.kind = Hit::Button; h.index = 21; return h; }
-    if (inside(snapBox)) { h.kind = Hit::Button; h.index = 22; return h; }
-    for (int i = 0; i < (int)laneChips.size(); ++i) if (inside(laneChips[(size_t)i])) { h.kind = Hit::LaneChip; h.index = i; return h; }
-    for (int i = 0; i < (int)busBtns.size(); ++i) if (inside(busBtns[(size_t)i])) { h.kind = Hit::Bus; h.index = i; return h; }
-    for (int i = 0; i < (int)palSwatches.size(); ++i) if (inside(palSwatches[(size_t)i])) { h.kind = Hit::Palette; h.index = i; return h; }
-    for (int i = 0; i < (int)crunchTypes.size(); ++i) if (inside(crunchTypes[(size_t)i])) { h.kind = Hit::CrunchType; h.index = i; return h; }
-    for (int i = 0; i < (int)knobs.size(); ++i) if (inside(knobs[(size_t)i].r)) { h.kind = Hit::Knob; h.index = i; return h; }
-    if (inside(timeline) && proc.hasLoop()) {
-        auto& m = proc.machine();
-        int N = juce::jmax(1, m.arrangedSamples);
-        int best = -1; float bestD = 1e9f;
-        for (int i = 0; i < (int)m.events.size(); ++i) {
-            auto& e = m.events[(size_t)i];
-            float x0 = timeline.getX() + timeline.getWidth() * e.destStart / (float)N;
-            int len = juce::jmax(e.srcEnd - e.srcStart, 64);
-            float x1 = timeline.getX() + timeline.getWidth() * (e.destStart + len) / (float)N;
-            if (p.x >= x0 - 2 && p.x <= x1 + 2 && p.y >= timeline.getY() && p.y <= timeline.getBottom()) {
-                float d = std::abs(p.x - 0.5f * (x0 + x1));
-                if (d < bestD) { bestD = d; best = i; }
-            }
-        }
-        if (best >= 0) { h.kind = Hit::Slice; h.index = best; return h; }
-    }
-    return h;
-}
+void CrumbsEditor::mouseDown(const juce::MouseEvent& e) {
+    layout();
+    auto p = e.position;
+    dragParam = -1;
+    const bool split = proc.value(G_MODE) >= 0.5f;
 
-void CrumbsEditor::mouseDown(const juce::MouseEvent& ev) {
-    lastMouse = ev.position;
-    auto h = hitTest(ev.position);
-    auto& m = proc.machine();
-    dragSlice = dragKnob = -1;
-    gesture = false;
-    if (h.kind == Hit::LaneChip) { m.setLane(h.index); proc.markDirty(); repaint(); return; }
-    if (h.kind == Hit::Bus) {
-        proc.setValue(G_BUS, (float)h.index);
-        m.bus.applyPreset(h.index);
-        proc.pushMachineToParams();
-        proc.markDirty(); proc.rebuildNow(); repaint(); return;
-    }
-    if (h.kind == Hit::CrunchType) { proc.setValue(G_CRTYPE, (float)h.index); proc.markDirty(); return; }
-    if (h.kind == Hit::Palette) {
-        if (!m.lanes.empty()) { m.recolourLane(m.selectedLane, h.index); proc.markDirty(); }
+    if (modeWhole.contains(p)) { proc.setValue(G_MODE, 0); return; }
+    if (modeSplit.contains(p)) { proc.setValue(G_MODE, 1); return; }
+    if (btnAB.contains(p)) { proc.setValue(G_AB, proc.value(G_AB) >= 0.5f ? 0.f : 1.f); return; }
+    if (lookBox.contains(p)) { proc.setValue(G_LOOKAHEAD, proc.value(G_LOOKAHEAD) >= 0.5f ? 0.f : 1.f); return; }
+
+    for (int i = 0; i < (int)orbs.size(); ++i) if (orbs[(size_t)i].contains(p)) {
+        proc.setSelectedPart(i);
+        if (e.mods.isAltDown())
+            proc.setValue(pp(i, P_LISTEN), proc.value(pp(i, P_LISTEN)) >= 0.5f ? 0.f : 1.f);
         return;
     }
-    if (h.kind == Hit::Mode) { proc.setValue(G_MODE, (float)h.index); return; }
-    if (h.kind == Hit::Knob) {
-        dragKnob = h.index;
-        auto* prm = proc.param(knobs[(size_t)dragKnob].param);
-        dragStartVal = prm ? prm->getValue() : 0;
-        dragStartY = ev.position.y;
-        if (prm) prm->beginChangeGesture();
-        gesture = true;
-        return;
-    }
-    if (h.kind == Hit::Slice) {
-        m.selectedEvent = h.index;
-        m.selectedLane = m.events[(size_t)h.index].lane;
-        if (ev.mods.isPopupMenu()) {
-            juce::PopupMenu menu;
-            for (int i = 0; i < (int)m.lanes.size(); ++i)
-                menu.addItem(100 + i, "Send to " + juce::String(m.lanes[(size_t)i].name), true, m.events[(size_t)h.index].lane == i);
-            menu.addSeparator();
-            menu.addItem(1, "Delete");
-            menu.addItem(2, "Copy");
-            menu.showMenuAsync(juce::PopupMenu::Options(), [this, idx = h.index](int r) {
-                auto& mm = proc.machine();
-                if (r == 1) mm.deleteEvent(idx);
-                else if (r == 2) mm.copyEvent(idx);
-                else if (r >= 100) mm.fixSort(idx, r - 100);
-                proc.markDirty(); proc.rebuildNow();
-            });
+    if (split) {
+        if (listenBtn.contains(p)) {
+            int s = proc.selectedPart();
+            proc.setValue(pp(s, P_LISTEN), proc.value(pp(s, P_LISTEN)) >= 0.5f ? 0.f : 1.f);
             return;
         }
-        dragSlice = h.index;
-        dragStartDest = m.events[(size_t)h.index].destStart;
-        m.beginGesture();
-        return;
-    }
-    if (h.kind == Hit::Button) {
-        switch (h.index) {
-            case 1: proc.setValue(G_AB, m.abOriginal ? 0.f : 1.f); break;
-            case 2: m.doUndo(); proc.pushMachineToParams(); proc.markDirty(); proc.rebuildNow(); break;
-            case 3: m.doRedo(); proc.pushMachineToParams(); proc.markDirty(); proc.rebuildNow(); break;
-            case 4: proc.setValue(G_KEEPKEY, m.keepInKey ? 0.f : 1.f); break;
-            case 5: proc.setPreview(!proc.isPreview()); break;
-            case 6:
-                m.rebuildLane(m.selectedLane);
-                proc.pushMachineToParams(); proc.markDirty(); proc.rebuildNow();
-                break;
-            case 7:
-                if (m.addLane()) { proc.pushMachineToParams(); proc.markDirty(); }
-                break;
-            case 8:
-                if (!m.lanes.empty()) {
-                    auto& L = m.lanes[(size_t)m.selectedLane];
-                    juce::String a = L.name, b = a + " B";
-                    if (L.kind == LANE_HATS) { a = "Closed Hats"; b = "Open Hats"; }
-                    if (L.kind == LANE_KICK) { a = "Kick"; b = "808"; }
-                    m.splitLane(m.selectedLane, a.toStdString(), b.toStdString(), L.kind);
-                    proc.pushMachineToParams(); proc.markDirty(); proc.rebuildNow();
-                }
-                break;
-            case 9:
-                if ((int)m.lanes.size() >= 2)
-                    m.mergeLanes(m.selectedLane, juce::jmin(m.selectedLane + 1, (int)m.lanes.size() - 1));
-                proc.pushMachineToParams(); proc.markDirty(); proc.rebuildNow();
-                break;
-            case 10: {
-                auto chooser = std::make_shared<juce::FileChooser>("Save audio", juce::File(), "*.wav");
-                chooser->launchAsync(juce::FileBrowserComponent::saveMode, [this, chooser](const juce::FileChooser& c) {
-                    auto f = c.getResult(); if (f != juce::File()) proc.saveAudio(f);
-                });
-            } break;
-            case 11: {
-                auto chooser = std::make_shared<juce::FileChooser>("Save MIDI", juce::File(), "*.mid");
-                chooser->launchAsync(juce::FileBrowserComponent::saveMode, [this, chooser](const juce::FileChooser& c) {
-                    auto f = c.getResult(); if (f != juce::File()) proc.saveMidi(f);
-                });
-            } break;
-            case 12: {
-                auto f = proc.writeTempAudio(-1);
-                if (f.existsAsFile()) juce::DragAndDropContainer::performExternalDragDropOfFiles({f.getFullPathName()}, false);
-            } break;
-            case 13: {
-                auto f = proc.writeTempMidi();
-                if (f.existsAsFile()) juce::DragAndDropContainer::performExternalDragDropOfFiles({f.getFullPathName()}, false);
-            } break;
-            case 14: {
-                auto current = juce::String(m.lanes[(size_t)m.selectedLane].name);
-                auto* te = new juce::AlertWindow("Rename lane", "Lane name", juce::MessageBoxIconType::NoIcon);
-                te->addTextEditor("n", current);
-                te->addButton("OK", 1); te->addButton("Cancel", 0);
-                te->enterModalState(true, juce::ModalCallbackFunction::create([this, te](int r) {
-                    if (r == 1) {
-                        auto s = te->getTextEditorContents("n");
-                        if (s.isNotEmpty()) proc.machine().renameLane(proc.machine().selectedLane, s.toStdString());
-                    }
-                    delete te;
-                }), false);
-            } break;
-            case 20: proc.setValue(G_KEY, (float)((m.keyPc + 1) % 12)); break;
-            case 21: proc.setValue(G_SCALE, (float)((m.scale + 1) % 5)); break;
-            case 22: proc.setValue(G_SNAPMODE, m.snapToRoot ? 0.f : 1.f); break;
+        if (muteBtn.contains(p)) {
+            int s = proc.selectedPart();
+            proc.setValue(pp(s, P_MUTE), proc.value(pp(s, P_MUTE)) >= 0.5f ? 0.f : 1.f);
+            return;
         }
-        proc.markDirty();
-        return;
     }
+    for (int i = 0; i < (int)wholePresets.size(); ++i) if (wholePresets[(size_t)i].contains(p)) {
+        proc.applyWholePreset(i); return;
+    }
+    for (int i = 0; i < (int)busChips.size(); ++i) if (busChips[(size_t)i].contains(p)) {
+        proc.applyBusPreset(i); return;
+    }
+    for (int i = 0; i < (int)crunchTypes.size(); ++i) if (crunchTypes[(size_t)i].contains(p)) {
+        proc.setValue(W_CRTYPE, (float)i); return;
+    }
+    for (int i = 0; i < (int)busCrunchTypes.size(); ++i) if (busCrunchTypes[(size_t)i].contains(p)) {
+        proc.setValue(B_CRTYPE, (float)i); return;
+    }
+
+    auto begin = [&](int id) {
+        dragParam = id; dragStart = proc.value(id); dragY0 = p.y;
+        if (auto* prm = proc.param(id)) prm->beginChangeGesture();
+    };
+    if (!split) {
+        const int ids[] = { W_PUNCH, W_BODY, W_SNAP, W_CRUNCH, W_TONE, W_GLUE, W_ROOM, W_WIDTH };
+        for (int i = 0; i < (int)wholeKnobs.size() && i < 8; ++i) if (wholeKnobs[(size_t)i].contains(p)) { begin(ids[i]); return; }
+    } else {
+        int s = proc.selectedPart();
+        const int ids[] = { pp(s,P_LEVEL), pp(s,P_PUNCH), pp(s,P_BODY), pp(s,P_DECAY),
+                            pp(s,P_CRUNCH), pp(s,P_PAN), pp(s,P_WIDTH), pp(s,P_SENS) };
+        for (int i = 0; i < (int)partKnobs.size() && i < 8; ++i) if (partKnobs[(size_t)i].contains(p)) { begin(ids[i]); return; }
+        if (lowSplitBox.contains(p)) { begin(S_LOW); return; }
+        if (highSplitBox.contains(p)) { begin(S_HIGH); return; }
+    }
+    if (mixBox.contains(p)) { begin(G_MIX); return; }
+    if (outBox.contains(p)) { begin(G_OUTPUT); return; }
+    if (ceilBox.contains(p)) { begin(G_CEILING); return; }
+    const int bids[] = { B_PUNCH, B_CRUNCH, B_SQUASH, B_PUMP, B_ROOM };
+    for (int i = 0; i < (int)busKnobs.size() && i < 5; ++i) if (busKnobs[(size_t)i].contains(p)) { begin(bids[i]); return; }
 }
 
-void CrumbsEditor::mouseDrag(const juce::MouseEvent& ev) {
-    if (dragKnob >= 0 && dragKnob < (int)knobs.size()) {
-        auto* prm = proc.param(knobs[(size_t)dragKnob].param);
-        if (!prm) return;
-        float d = (dragStartY - ev.position.y) / 140.f;
-        prm->setValueNotifyingHost(juce::jlimit(0.f, 1.f, dragStartVal + d));
-        proc.markDirty();
-        return;
-    }
-    if (dragSlice >= 0) {
-        auto& m = proc.machine();
-        int N = juce::jmax(1, m.arrangedSamples);
-        float dx = ev.position.x - lastMouse.x + (ev.position.x - (timeline.getX() + timeline.getWidth() * dragStartDest / (float)N
-                    + /* keep using absolute */ 0));
-        // map x to samples
-        int dest = (int)std::lround((ev.position.x - timeline.getX()) / juce::jmax(1.f, timeline.getWidth()) * N);
-        // keep relative grab: use start + delta from mouseDown x... store nothing else; use dest at cursor
-        dest = juce::jmax(0, dest);
-        if (ev.mods.isAltDown() || ev.mods.isCommandDown()) {
-            // extend: if dragging past the end, grow
-        }
-        m.setEventDestNoUndo(dragSlice, dest);
-        proc.markDirty();
-    }
+void CrumbsEditor::mouseDrag(const juce::MouseEvent& e) {
+    if (dragParam < 0) return;
+    dragKnob(dragParam, dragStart, e.position.y - dragY0);
 }
 
 void CrumbsEditor::mouseUp(const juce::MouseEvent&) {
-    if (gesture && dragKnob >= 0 && dragKnob < (int)knobs.size()) {
-        if (auto* prm = proc.param(knobs[(size_t)dragKnob].param)) prm->endChangeGesture();
-    }
-    if (dragSlice >= 0) { proc.markDirty(); proc.rebuildNow(); }
-    dragSlice = dragKnob = -1; gesture = false;
+    if (dragParam >= 0) if (auto* prm = proc.param(dragParam)) prm->endChangeGesture();
+    dragParam = -1;
 }
 
-void CrumbsEditor::mouseDoubleClick(const juce::MouseEvent& ev) {
-    auto h = hitTest(ev.position);
-    if (h.kind == Hit::Slice) {
-        proc.machine().deleteEvent(h.index);
-        proc.markDirty(); proc.rebuildNow();
-    }
+void CrumbsEditor::mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& w) {
+    // Wheel over a knob nudges it.
+    layout();
+    auto p = e.position;
+    auto tryWheel = [&](int id) {
+        if (auto* prm = proc.param(id)) {
+            float rng = prm->getNormalisableRange().end - prm->getNormalisableRange().start;
+            float v = proc.value(id) + w.deltaY * rng * 0.05f;
+            proc.setValue(id, prm->getNormalisableRange().snapToLegalValue(v));
+        }
+    };
+    if (mixBox.contains(p)) { tryWheel(G_MIX); return; }
+    if (outBox.contains(p)) { tryWheel(G_OUTPUT); return; }
+    if (ceilBox.contains(p)) { tryWheel(G_CEILING); return; }
 }
 
-bool CrumbsEditor::isInterestedInFileDrag(const juce::StringArray& files) {
-    for (auto& f : files) {
-        auto x = juce::File(f);
-        auto ext = x.getFileExtension().toLowerCase();
-        if (ext == ".wav" || ext == ".aif" || ext == ".aiff" || ext == ".flac") return true;
-    }
-    return false;
-}
-void CrumbsEditor::filesDropped(const juce::StringArray& files, int, int) {
-    for (auto& s : files) {
-        juce::File f(s);
-        juce::String err;
-        if (proc.loadFile(f, err)) { lastError.clear(); toast = "Loaded " + f.getFileName(); toastUntil = juce::Time::getMillisecondCounter() + 1800; repaint(); return; }
-        lastError = err;
-        toast = err; toastUntil = juce::Time::getMillisecondCounter() + 2500;
-    }
-}

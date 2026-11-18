@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(CRUMBS VERSION 1.0.0 LANGUAGES C CXX)
+project(CRUMBS VERSION 2.0.0 LANGUAGES C CXX)
 add_compile_options(-Wno-date-time -Wno-error=date-time)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -25,28 +25,36 @@ else()
   FetchContent_MakeAvailable(JUCE)
 endif()
 
+if(APPLE)
+  set(CRUMBS_FORMATS VST3 AU)
+else()
+  set(CRUMBS_FORMATS VST3)
+endif()
+
 juce_add_plugin(Crumbs
-  VERSION 1.0.0
+  VERSION 2.0.0
   COMPANY_NAME koobacorp
   COMPANY_WEBSITE "https://github.com/koobacorp"
   BUNDLE_ID com.koobacorp.crumbs
   PLUGIN_MANUFACTURER_CODE Koob
   PLUGIN_CODE Crmb
-  FORMATS VST3
+  FORMATS ${CRUMBS_FORMATS}
   PRODUCT_NAME CRUMBS
-  DESCRIPTION "CRUMBS drum loop editor"
-  IS_SYNTH TRUE
-  NEEDS_MIDI_INPUT TRUE
+  DESCRIPTION "CRUMBS drum mixer insert"
+  IS_SYNTH FALSE
+  NEEDS_MIDI_INPUT FALSE
   NEEDS_MIDI_OUTPUT FALSE
   IS_MIDI_EFFECT FALSE
   EDITOR_WANTS_KEYBOARD_FOCUS FALSE
   COPY_PLUGIN_AFTER_BUILD FALSE
-  VST3_CATEGORIES Instrument Sampler)
+  VST3_CATEGORIES Fx Dynamics
+  AU_MAIN_TYPE kAudioUnitType_Effect
+  AU_SANDBOX_SAFE TRUE)
 target_sources(Crumbs PRIVATE src/plugin/PluginProcessor.cpp src/plugin/PluginEditor.cpp)
 target_include_directories(Crumbs PUBLIC src/engine src/plugin)
 target_compile_definitions(Crumbs PUBLIC JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0 JUCE_DISPLAY_SPLASH_SCREEN=0
-  JUCE_USE_CAMERA=0 JUCE_USE_FLAC=1 JUCE_USE_OGGVORBIS=0 JUCE_USE_MP3AUDIOFORMAT=0 JUCE_STRICT_REFCOUNTEDPOINTER=1)
-target_link_libraries(Crumbs PRIVATE juce::juce_audio_utils juce::juce_audio_formats juce::juce_gui_basics
+  JUCE_USE_CAMERA=0 JUCE_USE_FLAC=0 JUCE_USE_OGGVORBIS=0 JUCE_USE_MP3AUDIOFORMAT=0 JUCE_STRICT_REFCOUNTEDPOINTER=1)
+target_link_libraries(Crumbs PRIVATE juce::juce_audio_utils juce::juce_gui_basics
   PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_lto_flags)
 set_target_properties(Crumbs PROPERTIES VISIBILITY_INLINES_HIDDEN ON CXX_VISIBILITY_PRESET hidden)
 if(APPLE)

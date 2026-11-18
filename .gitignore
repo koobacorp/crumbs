@@ -12,3 +12,4 @@ cmake-build-*/
 *.vst3
 shots/*
 !shots/*.png
+/dist/
