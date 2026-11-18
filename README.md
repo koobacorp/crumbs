@@ -9,7 +9,7 @@ Two modes, always your choice:
 
 The drum bus starts on **Clean**, which is a true bypass. Tape Warm, Blown Speaker, Smashed Room and Bedroom Crunch are punchy, saturated indie-drum colours. A/B compares the processed sound to the dry input.
 
-v2.0 is a macOS universal VST3 and AU. Nothing here is proven on real drums in FL until you try it, and it is not installed on your Mac until you ask.
+v2.0.1 is a macOS universal VST3 and AU. Nothing here is proven on real drums in FL until you try it, and it is not installed on your Mac until you ask.
 
 ## Latency and loudness
 

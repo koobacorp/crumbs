@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(CRUMBS VERSION 2.0.0 LANGUAGES C CXX)
+project(CRUMBS VERSION 2.0.1 LANGUAGES C CXX)
 add_compile_options(-Wno-date-time -Wno-error=date-time)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -32,7 +32,7 @@ else()
 endif()
 
 juce_add_plugin(Crumbs
-  VERSION 2.0.0
+  VERSION 2.0.1
   COMPANY_NAME koobacorp
   COMPANY_WEBSITE "https://github.com/koobacorp"
   BUNDLE_ID com.koobacorp.crumbs

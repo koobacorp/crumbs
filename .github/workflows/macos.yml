@@ -64,14 +64,14 @@ jobs:
           cp -R build/Crumbs_artefacts/Release/VST3/CRUMBS.vst3 build/Crumbs_artefacts/Release/AU/CRUMBS.component pkg/CRUMBS/
           cp scripts/install_mac.sh scripts/INSTALL.txt README.md TESTING.md pkg/CRUMBS/
           chmod +x pkg/CRUMBS/install_mac.sh
-          cd pkg && zip -9 -r -y -q "$GITHUB_WORKSPACE/CRUMBS-macOS-universal-v2.0.zip" CRUMBS
-          shasum -a 256 "$GITHUB_WORKSPACE/CRUMBS-macOS-universal-v2.0.zip" | tee "$GITHUB_WORKSPACE/sha256.txt"
+          cd pkg && zip -9 -r -y -q "$GITHUB_WORKSPACE/CRUMBS-macOS-universal-v2.0.1.zip" CRUMBS
+          shasum -a 256 "$GITHUB_WORKSPACE/CRUMBS-macOS-universal-v2.0.1.zip" | tee "$GITHUB_WORKSPACE/sha256.txt"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: CRUMBS-macOS-universal-v2.0
+          name: CRUMBS-macOS-universal-v2.0.1
           path: |
-            CRUMBS-macOS-universal-v2.0.zip
+            CRUMBS-macOS-universal-v2.0.1.zip
             shots/*.png
             engine-test-log.txt
             plugin-test-log.txt

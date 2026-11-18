@@ -196,6 +196,7 @@ struct Engine {
     CrunchOS wholeCrunch, busCrunch, partCrunch[kParts];
     Room wholeRoom, busRoom;
     Squash squash;
+    RmsAgc busAgc;
     PeakFollower pumpFol;
     OnePole pumpLpL, pumpLpR;
     Ceiling ceil0;
@@ -218,6 +219,7 @@ struct Engine {
         auto prepShapers = [&]() {
             wholePunch.prepare(sr); busPunch.prepare(sr);
             glue.prepare(sr); squash.prepare(sr);
+            busAgc.setMs(40.f, 90.f, sr);
             pumpFol.setMs(1.f, 180.f, sr);
             pumpLpL.setHz(150.f, sr); pumpLpR.setHz(150.f, sr);
             wholeRoom.prepare(sr); busRoom.prepare(sr);
@@ -241,6 +243,7 @@ struct Engine {
 
     void reset() {
         wholePunch.reset(); busPunch.reset(); glue.reset(); squash.reset();
+        busAgc.reset();
         wholeBodyL.reset(); wholeBodyR.reset();
         wholeToneL.reset(); wholeToneR.reset();
         snapL.reset(); snapR.reset();
@@ -428,6 +431,7 @@ struct Engine {
 
     void processBus(float& l, float& r) {
         if (p.busIsClean()) return;
+        float dL = l, dR = r;
         if (p.bPunch > 1e-5f) busPunch.tickStereo(l, r, p.bPunch, 0);
         if (p.bCrunch > 1e-5f) {
             float ol, or_;
@@ -442,6 +446,9 @@ struct Engine {
             l *= g; r *= g;
         }
         if (p.bRoom > 1e-5f) { float ol, or_; busRoom.tick(l, r, p.bRoom, ol, or_); l = ol; r = or_; }
+        // Match the whole bus stage to the dry bus input so a preset is a colour, not a level jump.
+        float ag = busAgc.tick(0.5f * (dL + dR), 0.5f * (l + r));
+        l *= ag; r *= ag;
     }
 };
 

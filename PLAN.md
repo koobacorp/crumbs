@@ -1,6 +1,6 @@
 # CRUMBS v2 — a drum mixer insert
 
-Status: **v2.0.** Stereo audio effect (not an instrument). macOS universal VST3 + AU. Public repo [koobacorp/crumbs](https://github.com/koobacorp/crumbs).
+Status: **v2.0.1.** Stereo audio effect (not an instrument). macOS universal VST3 + AU. Public repo [koobacorp/crumbs](https://github.com/koobacorp/crumbs).
 
 Put CRUMBS on an FL mixer track. It processes the drums already running through that track in real time. Two modes: **Whole** (default) shapes the kit as one sound; **Split** is a live band split into Kick, Snare, Hats and Perc. The drum bus starts on **Clean** (a bit-exact bypass). No loop loading, no rearrange, no rebuild, no MIDI, no ML, no paid compute.
 

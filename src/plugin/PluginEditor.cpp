@@ -81,11 +81,27 @@ void CrumbsEditor::layout() {
     b.removeFromTop(8);
     hintRow = b.removeFromTop(16);
     b.removeFromTop(8);
-    busRow = b.removeFromBottom(172);
-    b.removeFromBottom(10);
-    mixRow = b.removeFromBottom(86);
-    b.removeFromBottom(10);
-    workArea = b;
+    const bool splitMode = proc.value(G_MODE) >= 0.5f;
+    const float busH = 188.f;
+    const float mixH = 86.f;
+    if (splitMode) {
+        // Orbs use the leftover height; mix + bus stay on the bottom.
+        busRow = b.removeFromBottom(busH);
+        b.removeFromBottom(12);
+        mixRow = b.removeFromBottom(mixH);
+        b.removeFromBottom(16);
+        workArea = b;
+    } else {
+        // Pack Whole from the top so leftover space sits under the bus,
+        // not as an empty band between the knobs and the crunch row.
+        workArea = juce::Rectangle<float>(b.getX(), b.getY(), b.getWidth(), 30.f + 18.f + 88.f);
+        auto after = b;
+        after.removeFromTop(workArea.getHeight());
+        after.removeFromTop(24);
+        mixRow = after.removeFromTop(mixH);
+        after.removeFromTop(16);
+        busRow = after.removeFromTop(busH);
+    }
 
     auto t = topBar;
     auto title = t.removeFromLeft(130);
@@ -115,8 +131,8 @@ void CrumbsEditor::layout() {
         orbArea = w.removeFromLeft(juce::jmax(280.f, w.getWidth() * 0.38f));
         w.removeFromLeft(16);
         auto o = orbArea;
-        splitRow = o.removeFromBottom(44);
-        o.removeFromBottom(8);
+        splitRow = o.removeFromBottom(56);
+        o.removeFromBottom(10);
         float gap = 12.f;
         float ow = (o.getWidth() - gap) * 0.5f;
         float oh = (o.getHeight() - gap) * 0.5f;
@@ -184,12 +200,13 @@ void CrumbsEditor::layout() {
     auto ctypes = m.removeFromLeft(260);
     {
         juce::Rectangle<float> ct = ctypes;
-        ct.removeFromTop(14);
+        ct.removeFromTop(16); // "Crunch character" caption
+        auto row = ct.removeFromTop(36);
         float gw = 6.f;
-        float cw = (ct.getWidth() - gw * 3) / 4;
+        float cw = (row.getWidth() - gw * 3) / 4;
         for (int i = 0; i < 4; ++i) {
-            crunchTypes.push_back(ct.removeFromLeft(cw));
-            if (i < 3) ct.removeFromLeft(gw);
+            crunchTypes.push_back(row.removeFromLeft(cw));
+            if (i < 3) row.removeFromLeft(gw);
         }
     }
     m.removeFromLeft(20);
@@ -199,9 +216,9 @@ void CrumbsEditor::layout() {
     outBox = m.removeFromLeft(mw); m.removeFromLeft(gw);
     ceilBox = m;
 
-    // bus row — header sits inside the row so it cannot overlap crunch chips
+    // bus row — captions sit inside the row so they cannot overlap chips
     auto br = busRow;
-    br.removeFromTop(16); // room for the "Drum bus" caption drawn in paint
+    br.removeFromTop(16); // "Drum bus"
     br.removeFromTop(2);
     auto chips = br.removeFromTop(30);
     busChips.clear();
@@ -212,7 +229,8 @@ void CrumbsEditor::layout() {
         busChips.push_back(chips.removeFromLeft(cw));
         if (i + 1 < nb) chips.removeFromLeft(cg);
     }
-    br.removeFromTop(8);
+    br.removeFromTop(6);
+    br.removeFromTop(14); // "Bus character" caption drawn in paint
     auto types = br.removeFromTop(24);
     busCrunchTypes.clear();
     types.removeFromLeft(4);
@@ -285,12 +303,16 @@ void CrumbsEditor::paint(juce::Graphics& g) {
             bool mutedP = proc.value(pp(i, P_MUTE)) >= 0.5f;
             bool lis = proc.value(pp(i, P_LISTEN)) >= 0.5f;
             auto cell = orbs[(size_t)i];
-            auto lab = cell.removeFromBottom(18);
+            auto lab = cell.removeFromBottom(36);
             drawOrb(g, cell, partCol(i), mutedP ? 0.22f : (on ? 0.70f : 0.48f), on);
-            juce::String tag = names[i];
-            if (lis) tag += "  listen";
-            if (mutedP) tag += "  mute";
-            tiny(g, lab, tag, on ? ink() : muted());
+            auto nameR = lab.removeFromTop(16);
+            tiny(g, nameR, names[i], on ? ink() : muted());
+            if (lis || mutedP) {
+                juce::String flag;
+                if (lis) flag = "Listen";
+                if (mutedP) flag = flag.isEmpty() ? "Mute" : flag + "  +  mute";
+                tiny(g, lab, flag, on ? ink() : muted());
+            }
         }
         knob(g, lowSplitBox, "Low split", fmtHz(proc.value(S_LOW)), ink());
         knob(g, highSplitBox, "High split", fmtHz(proc.value(S_HIGH)), ink());
@@ -320,7 +342,7 @@ void CrumbsEditor::paint(juce::Graphics& g) {
     }
 
     tiny(g, juce::Rectangle<float>(crunchTypes.empty() ? 0 : crunchTypes[0].getX(),
-                                   mixRow.getY(), 200, 14), "Crunch character", muted(), juce::Justification::centredLeft);
+                                   mixRow.getY(), 200, 16), "Crunch character", muted(), juce::Justification::centredLeft);
     const char* cts[] = {"Tape","Tube","Clip","Fuzz"};
     int ct = (int)std::lround(proc.value(W_CRTYPE));
     for (int i = 0; i < (int)crunchTypes.size(); ++i)
@@ -335,6 +357,12 @@ void CrumbsEditor::paint(juce::Graphics& g) {
     int bp = (int)std::lround(proc.value(B_BUS));
     for (int i = 0; i < (int)busChips.size(); ++i)
         chip(g, busChips[(size_t)i], busPresetName(i), i == bp);
+    if (!busCrunchTypes.empty()) {
+        tiny(g, juce::Rectangle<float>(busCrunchTypes[0].getX(),
+                                       busCrunchTypes[0].getY() - 14,
+                                       200, 14),
+             "Bus character", muted(), juce::Justification::centredLeft);
+    }
     int bct = (int)std::lround(proc.value(B_CRTYPE));
     for (int i = 0; i < (int)busCrunchTypes.size(); ++i)
         chip(g, busCrunchTypes[(size_t)i], cts[i], i == bct);

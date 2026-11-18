@@ -1,4 +1,4 @@
-CRUMBS v2.0 — macOS install
+CRUMBS v2.0.1 — macOS install
 
 1. Unzip this folder somewhere you can find it.
 2. Close FL Studio.

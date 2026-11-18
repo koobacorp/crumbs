@@ -97,6 +97,27 @@ struct Agc {
     void reset() { ein = eout = 0; g = 1; }
 };
 
+// Program-level RMS match: slow enough to leave punch and pump alone,
+// quick enough that a preset's overall loudness sits next to the dry signal.
+struct RmsAgc {
+    float ein = 0, eout = 0, g = 1, coef = 0.01f, smooth = 0.01f;
+    void setMs(float envMs, float smoothMs, double sr) {
+        coef = 1.f - std::exp(-1.f / std::max(1.f, envMs * 0.001f * float(sr)));
+        smooth = 1.f - std::exp(-1.f / std::max(1.f, smoothMs * 0.001f * float(sr)));
+    }
+    float tick(float dry, float wet) {
+        ein  = flush(ein  + coef * (dry * dry - ein));
+        eout = flush(eout + coef * (wet * wet - eout));
+        float t = (eout > 1e-12f) ? std::sqrt(ein / eout) : 1.f;
+        t = clampf(t, 0.25f, 4.f);
+        float a = smooth;
+        if (std::fabs(t - g) > 0.25f) a = std::min(1.f, smooth * 6.f);
+        g = flush(g + a * (t - g));
+        return g;
+    }
+    void reset() { ein = eout = 0; g = 1; }
+};
+
 // RBJ biquad
 struct Biquad {
     float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, z1 = 0, z2 = 0;

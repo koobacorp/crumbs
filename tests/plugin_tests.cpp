@@ -259,16 +259,24 @@ int main(int, char**) {
       CHECKM(r.identicalToInput() == (int)r.inL.size(), "return to clean identical %d/%d", r.identicalToInput(), (int)r.inL.size());
     }
 
-    { std::puts("- bus presets differ from Clean and stay under the ceiling");
+    { std::puts("- bus presets differ from Clean, stay under the ceiling, and sit within ±1 dB RMS");
+      auto rmsOf = [](const std::vector<float>& x) {
+          double e = 0; for (float v : x) e += (double)v * v;
+          return x.empty() ? 0.0 : std::sqrt(e / (double)x.size());
+      };
       Rig r; r.fillKit(1.0);
       r.run(r.inL, r.inR);
       auto clean = r.L;
+      double rClean = rmsOf(clean);
       for (int i = 1; i <= 4; ++i) {
           r.p.applyBusPreset(i);
           r.run(r.inL, r.inR);
           CHECK(r.finite() && r.peak() > 0.02f && r.peak() <= dbToGain(-0.1f) + 1e-5f);
           int same = 0; for (size_t k = 0; k < r.L.size(); ++k) if (r.L[k] == clean[k]) ++same;
           CHECKM(same < (int)r.L.size() / 2, "preset %d too close to clean", i);
+          double db = 20 * std::log10(std::max(rmsOf(r.L), 1e-8) / std::max(rClean, 1e-8));
+          CHECKM(std::fabs(db) <= 1.1, "plugin preset %s RMS %+0.2f dB vs clean", busPresetName(i), db);
+          std::printf("    bus %-16s  rms %+0.2f dB vs clean\n", busPresetName(i), db);
       }
       r.p.applyBusPreset(0);
       r.run(r.inL, r.inR);

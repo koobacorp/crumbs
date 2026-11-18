@@ -231,10 +231,10 @@ static void testBusPresetsAndAgc() {
         CHECK(tu::peak(b.L) <= dbToGain(-0.1f) + 1e-5f);
         // clearly different from clean
         CHECK(tu::rmsDiff(b.L, dry) > 1e-4);
-        // not "just several dB louder" — compensated
+        // A preset is a colour, not a level jump: within about ±1 dB RMS of Clean.
         double r = tu::rms(b.L);
         double db = 20 * std::log10(std::max(r, 1e-8) / std::max(rClean, 1e-8));
-        CHECKM(db < 6.0, "preset %s RMS jump %+0.2f dB", busPresetName(i), db);
+        CHECKM(std::fabs(db) <= 1.1, "preset %s RMS %+0.2f dB vs clean (want ±1 dB)", busPresetName(i), db);
         std::printf("    bus %-16s  rms %+0.2f dB vs clean\n", busPresetName(i), db);
         // back to clean is exact
         p.applyBusPreset(BUS_CLEAN);
